@@ -1,0 +1,236 @@
+================================================================================
+ RESULTS REPORTING PLAN
+ Organising and Evaluation-Reporting Principles for the SSL Data-Distribution
+ Seizure-Detection Study (companion to STUDY_REPORT.txt)
+================================================================================
+
+Document status : LIVING DOCUMENT. Fixes the structure in which results are
+                  reported so that a large result surface (5 runs x 2 protocols
+                  x 3 evaluation layers x 5 min-event points) is presented as a
+                  tight argument rather than a data dump.
+Scope note      : The study is NOT split into separate papers. Frozen and full
+                  fine-tuning are two protocols within one paper (see
+                  STUDY_REPORT publication-scope decision). This plan keeps the
+                  two protocols side by side so the representation-vs-
+                  initialisation contrast (H6) stays visible.
+
+--------------------------------------------------------------------------------
+1. CORE ORGANISING PRINCIPLE
+--------------------------------------------------------------------------------
+
+Report BY HYPOTHESIS / COMPARISON, not by run. Every main-text table and figure
+exists to answer one contrast from the causal chain (STUDY_REPORT Sections 2
+and 9):
+
+    R0 -> R1   H1  does the SSL objective help on identical data?
+    R1 -> R2   H2  does full-distribution exposure add beyond the objective?
+    R2 -> R3   H3  does broad head/threshold fine-tuning unlock FA reduction?
+    R4 vs R0   H4  is any gain merely broader fine-tuning, no SSL?
+    R3 vs R4   H5  HEADLINE: SSL vs no-SSL, both broad fine-tuning
+    Frozen vs Full (all SSL runs)  H6  representation vs initialisation?
+
+Rule: any number that does not serve a contrast goes to SUPPLEMENTARY. This
+single rule collapses the full grid into a small main-text set.
+
+1.1 Hypothesis traceability matrix (completeness checklist)
+
+This matrix guarantees, at a glance, that every hypothesis has (i) a home in a
+main-text artifact and (ii) a significance test behind its claim. No hypothesis
+is orphaned; no claimed difference is asserted without a test.
+
+  Hyp  Contrast        Primary artifact        Primary metric      Sig. test
+  ---  --------------  ----------------------  ------------------  -----------
+  H1   R0 -> R1        Table 3, Fig 3, Table 1 probe AUROC;        DeLong
+                                               segment AUROC       (+McNemar)
+  H2   R1 -> R2        Table 2, Table 3, Fig 3 artefact FA (A);    paired
+                                               probe AUROC         bootstrap
+  H3   R2 -> R3        Table 2, Fig 2          artefact FA;        paired
+                                               event FAR/hr        bootstrap
+  H4   R4 vs R0        Table 1, Table 2        segment AUROC;      DeLong +
+                                               artefact FA         bootstrap
+  H5   R3 vs R4        Table 2, Fig 3          artefact FA;        paired
+       (HEADLINE)                              event FAR/hr        bootstrap
+  H6   Frozen vs Full  Fig 4, Tables 1-2       see Section 4.1     Wilcoxon
+       (all SSL runs)                          (two quantities)    signed-rank
+
+  Notes:
+    * "artefact FA (A)" = false-alarm rate on the artefact-proxy stratum A
+      (with control stratum B reported alongside).
+    * All tests are PAIRED and computed at SUBJECT level (Section 4).
+    * The optional shorter-min-event aim (if elevated to a hypothesis H7) would
+      be homed in Fig 2 (the Pareto sweep); it is currently reported there as a
+      descriptive result, not a tested hypothesis.
+
+--------------------------------------------------------------------------------
+2. MAIN-TEXT TABLES AND FIGURES
+--------------------------------------------------------------------------------
+
+Table 1 -- Headline performance.
+    One row per run (R0-R4). Columns: sensitivity, specificity, AUROC, AUPRC,
+    event FAR/hr, mean latency. BOTH protocols shown as paired sub-columns
+    (Frozen | Full). Reported at ONE reference min-event (25 s) for
+    readability; the full sweep is a figure (below) and supplementary tables.
+    Answers overall standing of each run.
+
+Table 2 -- Artefact mechanism (the target result).
+    Rows = runs. Columns = false-alarm rate on stratum A (artefact-proxy) vs
+    stratum B (control), per protocol. Answers H2, H3, and the H5 headline.
+    IMPORTANT: the table must annotate the FINE-TUNE DATA of each run
+    (R1, R2 = D0; R3, R4 = D_broad), because the H2 contrast (R1 vs R2, both
+    D0) must be visibly distinct from the H3/H5 contrasts (which involve
+    D_broad). Without this column the data variable and the SSL variable blur.
+
+Table 3 -- Representation separation (the "why").
+    Rows = encoders R0-R4. Columns = seizure-vs-artefact linear-probe AUROC,
+    silhouette / Fisher ratio (computed in the full embedding space). Answers
+    H1 vs H2 and supports the mechanism claim.
+
+Figure 1 -- Methodological framework (from STUDY_REPORT Section 10).
+
+Figure 2 -- Min-event sweep (Pareto).
+    Sensitivity vs FAR/hr Pareto curves, one curve per run, markers at
+    {10,15,20,25,30} s. Replaces five per-run tables with a single figure and
+    directly shows the shorter-duration aim. This mirrors the baseline
+    postproc_sweep Pareto panel (Section 5 below).
+
+Figure 3 -- Embedding analysis.
+    UMAP panels for R0/R1/R2/R3 (and R4) coloured by group (seizure /
+    artefact-proxy / background). R1 is included so R0 -> R1 -> R2 separates the
+    OBJECTIVE effect from the DATA-EXPOSURE effect.
+
+Figure 4 -- Frozen vs full (H6; see Section 4.1 for the exact quantities).
+    Paired plot of the headline metric under both protocols across runs,
+    designed to carry the TWO specific H6 quantities:
+      (Q1) does the FROZEN SSL model (encoder locked, linear head only) already
+           beat R0 on artefact FA / AUROC? -> the features themselves are
+           better, not just the initialisation;
+      (Q2) does the FROZEN-minus-FULL gap SHRINK for the SSL runs relative to a
+           supervised reference? -> most of the benefit lives in the
+           representation, not in fine-tuning.
+    Both quantities are stated numerically, not left to visual impression.
+
+--------------------------------------------------------------------------------
+3. TAMING THE TWO VOLUME MULTIPLIERS
+--------------------------------------------------------------------------------
+
+3.1 The min-event sweep (x5) -> a CURVE, not five tables.
+    Present as Recall(sensitivity) vs FAR/hr Pareto curves with the five
+    durations as markers on each run's curve. More legible than five tables and
+    it is exactly the trade-off the project claims to improve. The five-row-
+    per-run numeric tables live in supplementary.
+
+3.2 The two protocols (x2) -> PAIRED columns / panels, never separate tables.
+    Keeping Frozen and Full side by side is what makes H6 visible; splitting
+    them into separate tables destroys the contrast.
+
+--------------------------------------------------------------------------------
+4. STATISTICAL REPORTING
+--------------------------------------------------------------------------------
+
+  * Multiple seeds for at least the headline runs (R2/R3/R4): report
+    mean +/- 95% CI, not single-seed points. The baseline used a single seed
+    (42); the NEW claims require a variance estimate.
+  * Every CLAIMED contrast (H1-H6) is backed by a significance test -- not just
+    a selected few. Test choice follows the metric type:
+      - AUROC differences            -> DeLong test;
+      - rates (FAR/hr, sensitivity)  -> paired bootstrap 95% CI on the
+                                        difference (report whether the CI
+                                        excludes zero);
+      - paired binary segment preds  -> McNemar test;
+      - protocol comparison (H6)     -> Wilcoxon signed-rank across subjects.
+    Per-contrast assignment (matches the Section 1.1 matrix):
+      H1 R0->R1 : DeLong (AUROC) + McNemar (segment preds)
+      H2 R1->R2 : paired bootstrap (artefact FA on A) + DeLong (probe AUROC)
+      H3 R2->R3 : paired bootstrap (artefact FA and event FAR/hr)
+      H4 R4 vs R0: DeLong (AUROC) + paired bootstrap (artefact FA)
+      H5 R3 vs R4: paired bootstrap (artefact FA and event FAR/hr)  [HEADLINE]
+      H6 frozen vs full: Wilcoxon signed-rank on the two quantities in 4.1
+  * Multiple-comparison control. Because several contrasts are tested, p-values
+    are corrected across the H1-H6 family (Holm-Bonferroni) and both raw and
+    corrected values are reported.
+  * Aggregate event metrics PER SUBJECT (report subject-level means) to avoid
+    pseudoreplication: mice contribute 1-178 seizures each, so pooling segments
+    would bias toward high-burden animals. All paired tests use subject as the
+    pairing unit.
+  * All headline numbers come from the TEST partition (validation is the
+    development set; see STUDY_REPORT Sections 5.4 and 6.1).
+
+4.1 The two H6 quantities (representation vs initialisation)
+
+  H6 claims SSL improves the learned REPRESENTATION, not merely the training
+  starting point. Two numbers decide it (see Figure 4):
+    Q1  Frozen advantage: does the FROZEN SSL model (encoder locked, linear
+        head only) already outperform R0 on artefact FA and AUROC? A positive,
+        significant Q1 means the features themselves carry the benefit.
+    Q2  Gap closure: is the FROZEN-minus-FULL performance gap SMALLER for the
+        SSL runs than for a supervised reference? A shrinking gap means the
+        representation -- not fine-tuning -- supplies most of the gain.
+  Both are reported with subject-level Wilcoxon signed-rank tests and CIs.
+
+--------------------------------------------------------------------------------
+5. HOW THE BASELINE MIN-EVENT SWEEP WORKED (CONFIRMED) AND WHAT WE ADOPT
+--------------------------------------------------------------------------------
+
+Confirmed from DL_WITH_SSL_GA/postproc_sweep.py and eval_utils.py:
+
+  * OFFLINE and decoupled from training. The sweep reads cached prediction
+    NPZs (y_true, y_prob, plus per-segment chronology: mouse_id, chrono_idx,
+    t_start_sec). No model forward pass, CPU-only. One inference pass per model
+    is cached; post-processing is then swept cheaply.
+  * Grid = post-processing ORDER {refractory_then_min, min_then_refractory}
+    x MIN_EVENT_SEC {10, 15, 20, 25, 30} = 10 configurations per partition.
+  * Run independently on val and test (train optional, sibling output root).
+  * Held fixed during the sweep: smoothing window W = 3, threshold tau = 0.5,
+    refractory period = 30 s, max-event = 120 s, FAR/hr denominator
+    step_sec = 2.5 s.
+  * Per-config outputs via eval_utils.write_event_level_bundle; a comparison
+    CSV (20 rows for val+test); and a 3-panel impact figure:
+      (1) event Precision / Recall / F1 vs MIN_EVENT_SEC;
+      (2) event FAR/hr vs MIN_EVENT_SEC;
+      (3) Recall vs FAR/hr Pareto scatter, points annotated with the second
+          value (bottom-right = ideal).
+  * The two orderings were compared as a methodological ablation; the baseline
+    adopted min_then_refractory (clinical-standard; cited Saab 2020, Tang 2022,
+    Persyst, Encevis) and selected 25 s.
+
+What THIS project adopts and changes:
+
+  * ADOPT the offline cached-prediction sweep pattern (one forward pass ->
+    cache y_prob + chronology -> sweep post-processing offline) for every run
+    and both protocols. This makes the 5-run x 2-protocol x 5-sec surface cheap
+    to produce.
+  * ADOPT the Recall-vs-FAR/hr Pareto figure as main-text Figure 2.
+  * FIX the post-processing order to the canonical smoothing -> min-event ->
+    refractory -> max-duration sequence (= min_then_refractory). We do NOT
+    sweep the order (the baseline's order ablation is settled); we sweep ONLY
+    MIN_EVENT_SEC {10,15,20,25,30}.
+  * DO NOT select a single min-event on validation. The sweep is reported in
+    full as a curve; no post-processing hyperparameter is chosen on validation
+    (STUDY_REPORT Section 6.1). 25 s is used only as the reference operating
+    point in Table 1 for readability and baseline comparability.
+
+--------------------------------------------------------------------------------
+6. SUPPLEMENTARY MATERIAL (THE EXHAUSTIVE GRID)
+--------------------------------------------------------------------------------
+
+  * Full per-run x per-protocol x per-min-event numeric tables (all segment-
+    and event-level metrics).
+  * Per-subject metric breakdowns.
+  * Training/validation loss curves (SSL reconstruction; fine-tune BCE) and
+    validation macro-F1 curves.
+  * Optional masking-ratio ablation (STUDY_REPORT Section 5.6).
+  * Additional embedding figures (t-SNE) and the artefact-proxy visual-audit
+    sample.
+
+--------------------------------------------------------------------------------
+7. ONE-LINE SUMMARY
+--------------------------------------------------------------------------------
+
+Main text = the causal story in ~4 tables + ~4 figures, protocols paired,
+min-event as a Pareto curve, headline numbers from test with CIs.
+Supplementary = the complete grid for reproducibility. Nothing lost; the paper
+reads as an argument, not a dump.
+
+================================================================================
+ END OF DOCUMENT (living; updated as reporting is finalised)
+================================================================================

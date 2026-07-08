@@ -1,0 +1,494 @@
+================================================================================
+ STUDY REPORT
+ Self-Supervised Representation Learning under Varying Data Distributions
+ for Reduction of Artefact-Driven False Alarms in Rodent EEG Seizure Detection
+================================================================================
+
+Document status : LIVING DOCUMENT. This file is updated as each method,
+                  parameter, and result is finalised during implementation.
+                  Values marked [TBD] are fixed on the validation partition
+                  before any test-set evaluation and recorded here when set.
+Companion work  : Baseline project DL_WITH_SSL_GA (Multi-Scale TCN / M3).
+                  This study reuses the M3 encoder, data pipeline, and
+                  evaluation utilities of that project without modification,
+                  so that the baseline (R0) is a valid reference point.
+
+--------------------------------------------------------------------------------
+1. MOTIVATION AND PROBLEM STATEMENT
+--------------------------------------------------------------------------------
+
+Continuous single-channel rodent EEG monitoring produces recordings in which
+annotated seizure activity occupies well under 1% of total time (raw
+ictal:non-ictal ratio approximately 1:438 in the baseline corpus). To train
+the baseline Multi-Scale TCN (M3) under this extreme imbalance, the baseline
+project applied PROXIMITY-AWARE DOWNSAMPLING (baseline STUDY_REPORT Section 9;
+create_balanced_splits.py): all ictal segments and all non-ictal segments
+within +/-60 s of a seizure ("near-seizure") are retained, while non-ictal
+segments further than 60 s from any seizure ("far-from-seizure") are randomly
+subsampled to only 5% of the near-seizure count.
+
+Consequence. The resulting training corpus (220,653 segments; ictal:non-ictal
+1:2.37) is dominated by peri-ictal background (95.3% of the non-ictal class).
+Behavioural artefacts -- grooming, chewing, movement, electrode/muscle
+activity -- occur predominantly during normal behaviour spread across the
+whole recording, i.e. mostly FAR from seizures. Because the far pool is
+reduced to roughly 3.3% of the corpus, the vast majority of isolated artefact
+windows are discarded. The classifier is therefore trained almost exclusively
+to discriminate seizure from near-seizure background and seldom learns the
+appearance of artefacts. At deployment on the full, un-downsampled stream,
+transient high-morphology artefacts are effectively out-of-distribution and
+are frequently mis-fired as seizures. This artefact-driven FALSE ALARM is the
+failure mode targeted by the present study.
+
+Central idea. Exposing the ENCODER to the full data distribution -- including
+artefacts in their natural abundance -- through self-supervised representation
+learning (SSL) should yield a representation in which artefacts are separable
+from seizures, thereby reducing false alarms without requiring artefact
+labels (which do not exist: artefacts are unlabeled members of the non-ictal
+class).
+
+--------------------------------------------------------------------------------
+2. OBJECTIVES AND HYPOTHESES
+--------------------------------------------------------------------------------
+
+Primary objective. Determine whether, and by what mechanism, self-supervised
+pretraining on broader data distributions reduces artefact-driven false alarms
+in rodent EEG seizure detection, relative to the supervised M3 baseline.
+
+Hypotheses.
+  H1  A self-supervised objective improves the representation even when the
+      pretraining data is held identical to the baseline (R0 -> R1).
+  H2  Exposing the encoder to the full distribution (with artefacts) improves
+      artefact separation beyond the objective alone (R1 -> R2).
+  H3  Allowing the classification head and decision threshold to also see a
+      broadened background unlocks false-alarm reduction that a narrow
+      fine-tune cannot (R2 -> R3).
+  H4  Any gain is not merely an effect of broader fine-tuning data without SSL
+      (R4 vs R0).
+  H5  (Headline) With both models exposed to broad fine-tuning data, SSL
+      pretraining reduces false alarms relative to no SSL (R3 vs R4).
+  H6  SSL improves the learned REPRESENTATION, not only the optimisation /
+      initialisation (frozen linear-probe vs full fine-tune, all runs).
+
+--------------------------------------------------------------------------------
+3. DATA DISTRIBUTIONS
+--------------------------------------------------------------------------------
+
+All distributions derive from the same preprocessed segment store of the
+baseline project: single-channel EEG, 500 Hz, 5-second windows (2,500 samples)
+with 50% overlap, 50 Hz notch, DC removal, robust z-score normalisation. Labels
+are binary (ictal / non-ictal); artefacts are unlabeled non-ictal segments.
+
+  D0     Proximity-aware downsampled corpus (baseline training manifest,
+         data_splits_nonictal_sampled.json). 220,653 segments; near-seizure-
+         heavy; far-from-seizure background ~3.3%. This is the exact set on
+         which R0 was trained.
+
+  D_full Full unlabeled corpus (~33M segments; the untouched seizure/ and
+         non_seizure/ directories in natural abundance). Contains artefacts at
+         their true prevalence. Used ONLY for self-supervised pretraining
+         (labels are not consumed by SSL).
+
+  D_broad Broadened-background fine-tuning corpus. D0 with the far-from-seizure
+         sampling fraction substantially enlarged (and/or an artefact-rich
+         stratified supplement), so that the classification head and threshold
+         are exposed to diverse background during supervised fine-tuning.
+         Labeled. Construction parameters: [TBD, fixed on validation].
+
+The held-out validation and test partitions are the FULL, un-downsampled
+stream and are never downsampled, so evaluation reflects deployment conditions.
+
+--------------------------------------------------------------------------------
+4. ENCODER ARCHITECTURE (REUSED FROM BASELINE, UNCHANGED)
+--------------------------------------------------------------------------------
+
+The encoder is the Multi-Scale TCN (M3) of the baseline project
+(tcn_utils.py, class MultiScaleTCN), reused without architectural change so
+that R0 remains a valid reference and all runs share an identical backbone.
+
+  * Three parallel dilated causal-convolution branches (fine / intermediate /
+    coarse), dilations [1,2,4] / [8,16,32] / [32,64,128]; three CausalConvBlocks
+    per branch; LayerNorm over channels; GELU; spatial Dropout1d; residual
+    connections. Coarse branch receptive field ~5.38 s spans the full window.
+  * Fusion (concat + 1x1 conv, or average) -> global average pooling over time
+    -> single linear classification head nn.Linear(num_filters, 1).
+  * Encoder / head separation is built in via return_embedding=True, which
+    returns the pooled (batch, num_filters) feature vector and skips the head.
+
+Two tap points are used:
+  (i)  pooled vector  (batch, num_filters)          -- classification, probing,
+                                                       embedding analysis.
+  (ii) pre-pool feature map (batch, num_filters, T) -- available for span-level
+                                                       reconstruction if needed
+                                                       by the SSL decoder.
+
+Hyperparameters (num_filters, kernel_size, dropout, fusion) are inherited from
+the baseline's selected configuration so that the encoder capacity is identical
+across R0-R4.
+
+--------------------------------------------------------------------------------
+5. SELF-SUPERVISED REPRESENTATION LEARNING METHOD
+--------------------------------------------------------------------------------
+
+5.1 Method: Masked EEG Autoencoding (masked-span reconstruction)
+
+The encoder is pretrained by masking contiguous spans of the 5-second input
+window and reconstructing the original signal from the unmasked context. A
+lightweight decoder is attached to the encoder for pretraining and discarded
+afterwards; only the encoder weights are carried forward.
+
+5.2 Rationale (why masked reconstruction rather than contrastive learning)
+
+Contrastive representation learning (e.g. SimCLR/TS-TCC/TS2Vec) was considered
+and rejected as the primary method for three task-specific reasons:
+
+  (a) Mechanistic alignment. To reconstruct masked spans drawn from the full
+      distribution, the encoder must internally model artefact morphology.
+      This maps directly onto the study's premise -- "expose the encoder to
+      the full distribution."
+  (b) No pair construction. The corpus is ~99% background; contrastive
+      negatives are almost all background, so instance discrimination pushes
+      apart semantically identical background windows (the false-negative
+      problem), injecting label noise. Masked reconstruction requires no
+      positive/negative pairs and is immune to this.
+  (c) No augmentation invariance. Contrastive learning teaches invariance to
+      its augmentations; an augmentation that can turn seizure-like into
+      artefact-like morphology would collapse the very distinction the study
+      seeks to sharpen. Masked reconstruction imposes no such invariance.
+
+Masked autoencoding is thus both more suitable and more defensible for the
+false-alarm objective, while remaining a mainstream, well-cited SSL paradigm.
+
+5.3 Pretraining configuration
+
+  * Masking: contiguous span masking; masking ratio [TBD; candidate sweep
+    25% / 50% / 75%, fixed on validation].
+  * Reconstruction target: time-domain signal (primary). A spectral (STFT
+    magnitude) reconstruction term is an optional extension, recorded here if
+    adopted.
+  * Loss: reconstruction error on masked positions (e.g. MSE), [exact form TBD].
+  * Optimiser / schedule / batch size / epochs: [TBD]; checkpoint-resume
+    mirrors the baseline's pattern for long HPC jobs.
+  * Which runs pretrain on which data: R1 on D0; R2 and R3 on D_full.
+  * Held constant across R1-R3: masking scheme, decoder, loss, optimiser,
+    schedule. Only the ENCODER INITIALISATION and the DATA vary between runs.
+
+5.4 Data provenance and no-leakage policy (pretraining)
+
+  * SSL pretraining GRADIENTS come from TRAINING-PARTITION SUBJECTS ONLY.
+    Although the objective is label-free, no gradient update ever uses
+    validation or test signals, preserving the baseline's subject-level split
+    and eliminating encoder-side leakage.
+  * The VALIDATION PARTITION is used to monitor and select the SSL checkpoint
+    via reconstruction loss (no gradients). Monitoring on validation is
+    preferred over a held-out training slice because it measures reconstruction
+    generalisation to UNSEEN SUBJECTS. Validation therefore serves as the
+    development set throughout the study (SSL monitoring + fine-tune early
+    stopping).
+  * The TEST PARTITION is untouched during both pretraining and fine-tuning; it
+    is the only fully held-out set and supplies all headline numbers.
+
+5.5 Training diagnostics reported (pretraining)
+
+  * Train and validation RECONSTRUCTION LOSS curves per epoch (masked-position
+    error). These are the pretraining convergence/overfitting diagnostics.
+  * Note: F1-score does not apply to pretraining (no labels); the pretraining
+    objective is reconstruction loss.
+
+5.6 Hyperparameter policy: FIXED, DISCLOSED, CONSTANT ACROSS RUNS
+
+  Definition. "SSL knobs" are the hyperparameters that exist only because of
+  the self-supervised pretraining stage and have no counterpart in the baseline
+  supervised M3 (and are therefore not covered by M3's Optuna search):
+    - masking ratio (fraction of the window masked);
+    - mask span length (length of each contiguous masked segment);
+    - decoder architecture (depth/width of the discarded reconstruction head);
+    - reconstruction loss form (MSE vs L1; time-only vs +spectral term);
+    - SSL optimiser schedule (pretraining LR, warmup, batch size, epochs);
+    - fraction of D_full consumed (subsampling for the ~33M-segment job).
+
+  Policy. This study does NOT tune the SSL knobs to maximise performance.
+    (i)   The encoder architecture and the supervised fine-tuning recipe are
+          inherited UNCHANGED from the selected M3 configuration, so encoder
+          capacity is identical across R0-R4.
+    (ii)  The SSL knobs are fixed to literature-informed defaults for masked
+          autoencoding, DISCLOSED in this document, and held IDENTICAL across
+          R1-R4. They are not searched on downstream validation F1.
+    (iii) Because the SSL recipe is held constant, the only quantities that
+          vary between R1, R2 and R3 are the ENCODER INITIALISATION and the
+          DATA distribution -- preserving the one-variable-at-a-time logic of
+          the run matrix (Section 9).
+
+  Rationale. This is a controlled causal study of data-distribution effects,
+  not a leaderboard optimisation. Two practices are therefore explicitly
+  avoided because they would confound or weaken the causal claim:
+    - Per-run tuning (different knobs for R1 vs R2 vs R3) would confound
+      "data exposure" with "different recipe", destroying the R1->R2->R3
+      contrast.
+    - A large downstream-validation search would invite the criticism that
+      gains stem from tuning rather than from SSL/data, and -- since R0/R4 use
+      fixed recipes -- would introduce an asymmetric advantage.
+  Fixing and disclosing the knobs is both the most defensible option and the
+  scientifically stronger one, because the controlled comparison is most
+  convincing when only the studied variable moves.
+
+  Permitted exception (optional). A SINGLE, transparent masking-ratio sweep
+  {25% / 50% / 75%} may be reported as an ABLATION (characterising sensitivity,
+  not selecting a winner). If run, the chosen ratio is decided once and then
+  held constant across all runs; the sweep is reported in full. This is the
+  only place any SSL knob is varied, and it is framed as robustness
+  characterisation, not tuning.
+
+--------------------------------------------------------------------------------
+6. DOWNSTREAM ADAPTATION PROTOCOLS
+--------------------------------------------------------------------------------
+
+After pretraining, the SSL decoder is discarded and the linear classification
+head is attached. Each SSL run is adapted under two protocols:
+
+  P1  Frozen (linear probe). Encoder weights are frozen; only the linear head
+      is trained. Isolates the quality of the learned REPRESENTATION.
+
+  P2  Full fine-tune. Encoder and head are trained end-to-end. Matches the
+      baseline deployment regime and measures the initialisation benefit.
+
+The supervised fine-tuning recipe (loss BCEWithLogitsLoss, optimiser, LR
+schedule, early stopping, post-processing) is inherited unchanged from the
+baseline M3 training, so that the only differences from R0 are the encoder
+initialisation and, in R3/R4, the fine-tuning data distribution.
+
+6.1 Data usage and no-leakage policy (fine-tuning)
+
+  * Fine-tuning gradients come ONLY from training data (D0 or D_broad, built
+    from training-partition subjects).
+  * The validation partition is used ONLY for early stopping and model
+    selection -- never for gradient updates.
+  * NO thresholding is performed. The decision rule is fixed at P > 0.5, as in
+    the baseline project; the threshold is not tuned on validation.
+  * No post-processing hyperparameter is selected on validation either; event
+    metrics are instead reported across a range of min-event durations
+    (Section 8.1). The test partition is evaluated once, at the end.
+
+6.2 Training diagnostics reported (fine-tuning; every trained run)
+
+  * Train and validation LOSS (BCEWithLogitsLoss) curves per epoch.
+  * Validation MACRO-F1 per epoch -- the early-stopping / model-selection
+    metric (as in the baseline). F1 is a selection/monitoring metric, NOT the
+    differentiable training objective (which is BCE); this distinction is kept
+    explicit in the write-up.
+
+--------------------------------------------------------------------------------
+7. RUN MATRIX (5 RUNS x 2 PROTOCOLS)
+--------------------------------------------------------------------------------
+
+  Run  Encoder init  SSL data   Fine-tune data   Frozen(P1)   Full-FT(P2)
+  ---  ------------  --------   --------------   ----------   -----------
+  R0   random        --         D0               n/a          existing*
+  R1   SSL           D0         D0               yes          yes
+  R2   SSL           D_full     D0               yes          yes
+  R3   SSL           D_full     D_broad          yes          yes
+  R4   random        --         D_broad          n/a          yes
+
+  * R0 is NOT developed in this project. It is the existing supervised M3 from
+    DL_WITH_SSL_GA. Its published metrics are cited as the reference point, and
+    its trained encoder is loaded only for the embedding comparison (Section
+    8.3). Frozen probing is not applicable to R0/R4 as they have no SSL encoder
+    to freeze.
+
+Only R1-R4 are trained in the present study.
+
+--------------------------------------------------------------------------------
+8. EVALUATION FRAMEWORK (THREE LAYERS)
+--------------------------------------------------------------------------------
+
+All evaluation is performed on the held-out validation/test partitions of the
+FULL, un-downsampled stream. Layer 1 uses the baseline eval_utils.py unchanged
+for direct comparability with M3.
+
+8.1 Layer 1 -- Standard performance metrics (eval_utils.py)
+
+  Segment level : accuracy, precision, recall (sensitivity), specificity,
+                  Youden's J, macro-F1, AUROC, AUPRC, segment false-alarm rate.
+  Event level   : per-mouse chronological predictions are post-processed by a
+                  FIXED, ORDERED four-stage pipeline, then matched to ground
+                  truth by any-overlap -> precision, recall/sensitivity, F1,
+                  false alarms per hour (far_per_hour_event), mean detection
+                  latency.
+
+                  Post-processing order (applied in this exact sequence):
+                    1. Probability smoothing        (moving window = 3 segments)
+                    2. Minimum-event filtering       (drop events < min-event; see
+                                                      MIN-EVENT SWEEP below)
+                    3. Refractory-period merging     (merge events < 30 s apart)
+                    4. Maximum-duration filtering    (drop events > 120 s)
+                  The decision rule P > 0.5 is applied to the smoothed
+                  probabilities (after stage 1) to form candidate events.
+
+                  MIN-EVENT SWEEP. Event metrics are reported at min-event
+                  durations of 10, 15, 20, 25, and 30 s (as in the baseline
+                  project), rather than fixing a single value. The baseline
+                  selected 25 s because it reduced false positives but at the
+                  cost of missing short-duration seizures; the present study
+                  aims for stronger performance at SHORTER min-event durations,
+                  so the full sweep is reported to make the sensitivity / false-
+                  alarm / latency trade-off explicit across durations. This
+                  sweep is a REPORTING choice, not a validation-based selection.
+
+8.2 Layer 2 -- Artefact-proxy stratified false-alarm number
+
+Because artefacts are unlabeled, a label-free proxy identifies non-ictal
+segments that are almost certainly artefacts AND morphologically resemble
+seizures (the segments most likely to trigger false alarms).
+
+  Stratum A ("seizure-mimicking non-ictal"). Non-ictal (label 0) segments that
+  are BOTH:
+    * far from any seizure: min distance to nearest seizure > 60 s (candidate
+      margin 120 s), using the baseline min_distance_to_seizure() logic; AND
+    * morphologically seizure-like, per a MULTI-FEATURE morphology score rather
+      than a single amplitude threshold. Candidate features (single-channel-
+      valid): line length (high-frequency / muscle activity), kurtosis (spiky /
+      electrode-pop transients), signal envelope amplitude (movement), variance
+      / power, and a high-band power ratio (EMG band). Features are standardised
+      across the non-ictal pool; segments whose morphology lies within the
+      seizure feature manifold (near the seizure feature-centroid / high
+      composite score) are selected.
+
+  A single high-amplitude or high-variance threshold is deliberately NOT used,
+  as it misses muscle/electrode artefacts that are not the largest-amplitude
+  events.
+
+  Stratum B (control). Far-from-seizure, LOW-morphology quiet background. If
+  false alarms fall on A but not on B, the improvement is specific to hard
+  artefacts rather than a global threshold shift.
+
+  Metric. For each trained model: segment-level false-alarm rate on A, and,
+  after the standard post-processing, false-alarm events per artefact-hour on
+  A; reported alongside B.
+
+  Guardrails.
+    * The stratum is defined ONLY from signal statistics and seizure distance,
+      never from any model's predictions (no circularity).
+    * All thresholds/percentiles are fixed on validation before test.
+    * A random sample (~50-100 segments) of stratum A is visually audited to
+      confirm the segments are genuine non-seizure artefacts; the audit is
+      documented here.
+
+8.3 Layer 3 -- Representation (embedding) analysis
+
+Purpose: show WHY false alarms fall -- that the SSL encoder separates
+artefacts from seizures in feature space where the baseline overlaps them.
+
+  * Extract frozen-encoder pooled embeddings (num_filters-dim) for a balanced
+    held-out sample across groups: seizure, artefact-proxy (A), quiet
+    background (B), and optionally peri-ictal near-seizure.
+  * Encoders compared: ALL runs -- R0 (baseline M3, loaded from DL_WITH_SSL_GA),
+    R1, R2, R3, and R4. Including R1 is essential: because R1 applies the SSL
+    objective on the artefact-poor D0 while R2 applies it on the full
+    distribution, the R0 -> R1 -> R2 progression visually distinguishes whether
+    artefact/seizure separation arises from the OBJECTIVE (H1) or from
+    full-distribution DATA EXPOSURE (H2). R3/R4 complete the broad-fine-tune
+    contrast.
+  * Encoder state analysed: for SSL runs (R1-R3) the frozen encoder as used
+    under the linear-probe protocol (the representation as learned by SSL); for
+    R0/R4, which have no SSL stage, their trained supervised encoder. This
+    asymmetry is unavoidable (R0/R4 have no encoder to freeze) and is stated
+    explicitly in the write-up.
+  * Qualitative: UMAP (primary) and t-SNE (secondary) 2-D projections coloured
+    by group.
+  * Quantitative (computed in the FULL embedding space, not the 2-D
+    projection, to avoid reliance on a single figure):
+      - seizure-vs-artefact linear-probe AUROC (logistic probe on frozen
+        embeddings): higher => better separation;
+      - silhouette score and/or Fisher ratio between the seizure and artefact
+        clusters.
+
+--------------------------------------------------------------------------------
+9. CAUSAL COMPARISON MAP (WHAT EACH CONTRAST PROVES)
+--------------------------------------------------------------------------------
+
+  Comparison        Question answered                         Primary evidence
+  ----------------  ----------------------------------------  -----------------
+  R0 -> R1          Does the SSL objective help at all, on    L1 metrics +
+                    identical data? (no data confound)        probe AUROC
+  R1 -> R2          Does full-distribution exposure add       L2 artefact FA
+                    beyond the objective?                     (stratum A)
+  R2 -> R3          Does broad head/threshold fine-tuning     L2 artefact FA +
+                    unlock FA reduction?                      event FA/hr
+  R4 vs R0          Is any gain merely broader fine-tuning    L1 metrics +
+                    without SSL?                              L2 artefact FA
+  R3 vs R4          HEADLINE: SSL vs no-SSL, both broad       L2 artefact FA +
+                    fine-tuning                               L3 separation
+  Frozen vs Full    Did SSL improve the representation or     probe AUROC,
+   (all SSL runs)   only the initialisation?                  silhouette, P1/P2
+
+--------------------------------------------------------------------------------
+10. METHODOLOGICAL FLOW (SCHEMATIC)
+--------------------------------------------------------------------------------
+
+  STAGE 0  ASSETS (reused from DL_WITH_SSL_GA)
+           Encoder MultiScaleTCN(M3) | R0 existing | D0, D_full, D_broad
+                        |
+  STAGE 1  SSL PRETRAINING  (Masked EEG Autoencoder; encoder only, no labels)
+           R1 <- D0 ;  R2,R3 <- D_full
+                        |  pretrained encoder weights
+  STAGE 2  DOWNSTREAM ADAPTATION
+           P1 Frozen linear probe  |  P2 Full fine-tune
+           fine-tune data: D0 (R1,R2) or D_broad (R3,R4); recipe = R0's
+                        |
+  STAGE 3  RUN MATRIX  (5 runs x 2 protocols; Section 7)
+                        |
+  STAGE 4  EVALUATION
+           L1 standard metrics (eval_utils.py)
+           L2 artefact-proxy stratified FA  (stratum A vs control B)
+           L3 embedding analysis (UMAP/t-SNE + probe AUROC + silhouette)
+                        |
+  STAGE 5  CAUSAL COMPARISONS  (Section 9)  ->  H1-H6
+
+--------------------------------------------------------------------------------
+11. REPRODUCIBILITY AND DOCUMENTATION CONVENTIONS
+--------------------------------------------------------------------------------
+
+  * Deterministic seeding (seed 42) across Python, NumPy, and PyTorch, matching
+    the baseline.
+  * The baseline encoder, data pipeline, and eval_utils.py are imported /
+    reused unchanged; the exact commit/version reference is recorded here when
+    the code is written.
+  * Every fixed value currently marked [TBD] (masking ratio, D_broad
+    construction, proxy features and percentiles, optimiser/schedule/epochs) is
+    fixed on the validation partition and recorded in this document before any
+    test-set number is produced.
+  * Each implementation step, decision, and result is appended to this file as
+    work proceeds, in the scientific register of the baseline STUDY_REPORT.
+
+--------------------------------------------------------------------------------
+12. OPEN PARAMETERS TO BE FIXED DURING IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+  Note: the SSL knobs below ([TBD-1..3]) are FIXED to disclosed defaults and
+  held constant across R1-R4 per the policy in Section 5.6 -- they are NOT
+  tuned on downstream validation. "[TBD]" here means "value to be recorded once
+  chosen", not "to be searched".
+
+  [TBD-1]  Masking ratio and span length for the masked autoencoder (fixed;
+           optional single ablation sweep {25/50/75%} per Section 5.6).
+  [TBD-2]  Decoder architecture and reconstruction loss form; whether a
+           spectral (STFT) reconstruction term is added (fixed, disclosed).
+  [TBD-3]  SSL optimiser, LR schedule, batch size, epochs, pretraining data
+           subsampling for the ~33M-segment D_full job (fixed, disclosed).
+  [TBD-4]  D_broad construction (far-sampling fraction / artefact supplement).
+  [TBD-5]  Artefact-proxy feature set, standardisation, composite score, and
+           selection percentiles; seizure-distance margin (60 s vs 120 s).
+  [TBD-6]  Embedding-analysis sample sizes per group.
+
+--------------------------------------------------------------------------------
+13. REFERENCES (TO BE COMPLETED AT WRITE-UP)
+--------------------------------------------------------------------------------
+
+  Baseline project methods    : DL_WITH_SSL_GA/STUDY_REPORT.txt
+  Masked autoencoding (SSL)   : [to be cited]
+  Contrastive TS SSL (context): [to be cited]
+  EEG artefact morphology     : [to be cited]
+
+================================================================================
+ END OF DOCUMENT (living; updated as implementation proceeds)
+================================================================================
