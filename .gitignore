@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# VS Code
+.vscode/
+
+# Model checkpoints
+*.pt
+*.pth
+
+# NumPy arrays
+*.npy
+*.npz
+
+# Results
+results/
+logs/
