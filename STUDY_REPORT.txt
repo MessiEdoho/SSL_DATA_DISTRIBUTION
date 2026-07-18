@@ -84,19 +84,76 @@ are binary (ictal / non-ictal); artefacts are unlabeled non-ictal segments.
          heavy; far-from-seizure background ~3.3%. This is the exact set on
          which R0 was trained.
 
-  D_full Full unlabeled corpus (~33M segments; the untouched seizure/ and
-         non_seizure/ directories in natural abundance). Contains artefacts at
-         their true prevalence. Used ONLY for self-supervised pretraining
-         (labels are not consumed by SSL).
+  D_full Full unlabeled TRAIN-partition corpus (~28.7M segments at ~0.23%
+         natural ictal prevalence; the untouched seizure/ and non_seizure/
+         directories in natural abundance). Contains artefacts at their true
+         prevalence. Used ONLY for self-supervised pretraining (labels are not
+         consumed by SSL; gradients from train subjects only).
 
   D_broad Broadened-background fine-tuning corpus. D0 with the far-from-seizure
          sampling fraction substantially enlarged (and/or an artefact-rich
          stratified supplement), so that the classification head and threshold
          are exposed to diverse background during supervised fine-tuning.
-         Labeled. Construction parameters: [TBD, fixed on validation].
+         Labeled. Construction parameters: [TBD-4, fixed on validation].
 
 The held-out validation and test partitions are the FULL, un-downsampled
 stream and are never downsampled, so evaluation reflects deployment conditions.
+
+3.1 Data split and manifest mapping (REUSED from baseline; identical to R0)
+
+The train/val/test split is PURELY FOLDER-MEMBERSHIP and subject-wise by
+construction (generate_data_splits.py): the five TRAIN_DATA* folders form the
+TRAIN partition, VAL_DATA the VAL partition, TEST_DATA the TEST partition. There
+is no RNG in the split; subject identity is parsed as mouse_id = filename before
+the first "_", and a set-intersection LEAKAGE CHECK guarantees no mouse appears
+in more than one partition. Because assignment is deterministic folder-
+membership, this project REUSES the baseline manifests unchanged -> the split is
+byte-identical to R0's, which is required for a valid baseline comparison. No
+new split is generated.
+
+CONFIRMED PRESENT on the cluster (data_splits_outputs/): data_splits.json,
+data_splits_full_train_enriched.json, data_splits_nonictal_sampled.json,
+data_splits_nonictal_sampled_filtered.json,
+data_splits_nonictal_sampled_filtered_enriched.json, plus create_balanced_splits
+.log and splits_generation.log. Every manifest this project needs already
+exists; ONLY D_broad remains to be built.
+
+Manifest mapping (cluster dir /scratch/22206468/INPUT_DATA/data_splits_outputs/):
+
+  Distribution / partition        Baseline manifest              Partition key
+  ------------------------------  -----------------------------  -------------
+  D0 (proximity-downsampled)      data_splits_nonictal_sampled   train
+                                  .json  (or ..._filtered_
+                                  enriched.json for chronology)
+  D_full (full unlabelled, SSL)   data_splits.json (raw) OR      train
+                                  data_splits_full_train_
+                                  enriched.json (with time meta)
+  D_broad (broadened background)  NEW manifest built from        train
+                                  data_splits.json train
+                                  [TBD-4]
+  Val / Test (held-out eval)      data_splits_nonictal_sampled_  val / test
+                                  filtered_enriched.json
+
+Notes.
+  * The original non_seizure/ folders were deliberately preserved on the cluster
+    for SSL (create_balanced_splits.py); D_full reads them at natural abundance.
+  * chrono_idx and t_start_sec (per-segment time index needed for event-level
+    evaluation and the min-event sweep) are added by build_chronology.py +
+    enrich_manifest.py; use the *_enriched.json manifests wherever event-level
+    metrics are computed.
+  * Val/test are the FULL partitions minus only extreme-amplitude / NaN segments
+    (apply_val_test_filter.py, |x|>1000 or non-finite; <0.075% of val removed);
+    they are NEVER proximity-downsampled.
+  * Validation used to MONITOR SSL reconstruction loss = VAL_DATA (val
+    partition), no gradients (Section 5.4).
+  * Exact per-partition subject/segment counts live in each manifest's metadata
+    on the cluster; record them here once read [TBD-8]. Known figures: D0 =
+    220,653 train segments; D_full train ~28.7M (~0.23% ictal).
+  * Code-time check for D_full (SSL): confirm whether data_splits.json's train
+    list ENUMERATES every non-ictal segment (so the SSL loader can read it
+    directly) or whether the full non_seizure/ corpus must be enumerated by
+    scanning the folders. Verify the physical segment count on disk vs the
+    manifest before building the SSL data loader (record under [TBD-8]).
 
 --------------------------------------------------------------------------------
 4. ENCODER ARCHITECTURE (REUSED FROM BASELINE, UNCHANGED)
@@ -217,7 +274,8 @@ false-alarm objective, while remaining a mainstream, well-cited SSL paradigm.
     (iii) Because the SSL recipe is held constant, the only quantities that
           vary between R1, R2 and R3 are the ENCODER INITIALISATION and the
           DATA distribution -- preserving the one-variable-at-a-time logic of
-          the run matrix (Section 9).
+          the run matrix (Section 7; causal comparison map in
+          RESULTS_REPORTING_PLAN.txt Section 1.2).
 
   Rationale. This is a controlled causal study of data-distribution effects,
   not a leaderboard optimisation. Two practices are therefore explicitly
@@ -265,9 +323,18 @@ initialisation and, in R3/R4, the fine-tuning data distribution.
     selection -- never for gradient updates.
   * NO thresholding is performed. The decision rule is fixed at P > 0.5, as in
     the baseline project; the threshold is not tuned on validation.
-  * No post-processing hyperparameter is selected on validation either; event
-    metrics are instead reported across a range of min-event durations
-    (Section 8.1). The test partition is evaluated once, at the end.
+  * The decision THRESHOLD is not tuned (fixed P > 0.5). The min-event
+    OPERATING POINT is handled EXACTLY as in DL_WITH_SSL_GA: reuse/adapt
+    postproc_sweep.py to sweep {10,15,20,25,30 s} offline on cached predictions
+    (order fixed to the baseline's min_then_refractory), and select the
+    operating point on validation from the Recall(sensitivity)-vs-FAR/hr Pareto
+    / impact plots -- the point in the BOTTOM-RIGHT ideal region (high
+    sensitivity, low FAR/hr) -- just as the baseline selected its 25 s. NO fixed
+    FAR/hr ceiling. The selected operating point is then applied on test.
+  * For comparability with the baseline, results are ALSO reported at the common
+    25 s point, and the full min-event sweep is reported as a curve
+    (RESULTS_REPORTING_PLAN.txt Section 2.1). The test partition is evaluated
+    once, at the end.
 
 6.2 Training diagnostics reported (fine-tuning; every trained run)
 
@@ -278,8 +345,14 @@ initialisation and, in R3/R4, the fine-tuning data distribution.
     explicit in the write-up.
 
 --------------------------------------------------------------------------------
-7. RUN MATRIX (5 RUNS x 2 PROTOCOLS)
+7. RUN MATRIX (5-RUN COMPARISON MATRIX; 4 RUNS DEVELOPED HERE)
 --------------------------------------------------------------------------------
+
+Scope note. The comparison matrix spans FIVE runs (R0-R4) because R0 is the
+REFERENCE ANCHOR every contrast is measured against. Only FOUR runs -- R1, R2,
+R3, R4 -- are DEVELOPED (trained) in this project. R0 is reused from the parent
+project (its metrics are cited; its encoder is loaded only for the embedding
+comparison). Protocols: R1-R3 run frozen + full; R0/R4 are full-only.
 
   Run  Encoder init  SSL data   Fine-tune data   Frozen(P1)   Full-FT(P2)
   ---  ------------  --------   --------------   ----------   -----------
@@ -291,135 +364,51 @@ initialisation and, in R3/R4, the fine-tuning data distribution.
 
   * R0 is NOT developed in this project. It is the existing supervised M3 from
     DL_WITH_SSL_GA. Its published metrics are cited as the reference point, and
-    its trained encoder is loaded only for the embedding comparison (Section
-    8.3). Frozen probing is not applicable to R0/R4 as they have no SSL encoder
-    to freeze.
+    its trained encoder is loaded only for the embedding comparison
+    (RESULTS_REPORTING_PLAN.txt Section 2.3). Frozen probing is not applicable
+    to R0/R4 as they have no SSL encoder to freeze.
 
 Only R1-R4 are trained in the present study.
 
 --------------------------------------------------------------------------------
-8. EVALUATION FRAMEWORK (THREE LAYERS)
+8. EVALUATION FRAMEWORK (THREE LAYERS)  -- MOVED
 --------------------------------------------------------------------------------
 
-All evaluation is performed on the held-out validation/test partitions of the
-FULL, un-downsampled stream. Layer 1 uses the baseline eval_utils.py unchanged
-for direct comparability with M3.
+The three-layer evaluation framework (what is measured) has been MOVED to the
+companion document:
 
-8.1 Layer 1 -- Standard performance metrics (eval_utils.py)
+    RESULTS_REPORTING_PLAN.txt, Section 2 -- EVALUATION FRAMEWORK (THREE LAYERS)
 
-  Segment level : accuracy, precision, recall (sensitivity), specificity,
-                  Youden's J, macro-F1, AUROC, AUPRC, segment false-alarm rate.
-  Event level   : per-mouse chronological predictions are post-processed by a
-                  FIXED, ORDERED four-stage pipeline, then matched to ground
-                  truth by any-overlap -> precision, recall/sensitivity, F1,
-                  false alarms per hour (far_per_hour_event), mean detection
-                  latency.
+It defines, unchanged:
+    Layer 1  Standard performance metrics (eval_utils.py; segment + event
+             level, fixed four-stage post-processing, min-event sweep).
+    Layer 2  Artefact-proxy stratified false-alarm number (stratum A vs
+             control B; multi-feature seizure-mimicking-non-ictal proxy).
+    Layer 3  Representation (embedding) analysis (UMAP/t-SNE + probe AUROC +
+             silhouette across all encoders R0-R4).
 
-                  Post-processing order (applied in this exact sequence):
-                    1. Probability smoothing        (moving window = 3 segments)
-                    2. Minimum-event filtering       (drop events < min-event; see
-                                                      MIN-EVENT SWEEP below)
-                    3. Refractory-period merging     (merge events < 30 s apart)
-                    4. Maximum-duration filtering    (drop events > 120 s)
-                  The decision rule P > 0.5 is applied to the smoothed
-                  probabilities (after stage 1) to form candidate events.
-
-                  MIN-EVENT SWEEP. Event metrics are reported at min-event
-                  durations of 10, 15, 20, 25, and 30 s (as in the baseline
-                  project), rather than fixing a single value. The baseline
-                  selected 25 s because it reduced false positives but at the
-                  cost of missing short-duration seizures; the present study
-                  aims for stronger performance at SHORTER min-event durations,
-                  so the full sweep is reported to make the sensitivity / false-
-                  alarm / latency trade-off explicit across durations. This
-                  sweep is a REPORTING choice, not a validation-based selection.
-
-8.2 Layer 2 -- Artefact-proxy stratified false-alarm number
-
-Because artefacts are unlabeled, a label-free proxy identifies non-ictal
-segments that are almost certainly artefacts AND morphologically resemble
-seizures (the segments most likely to trigger false alarms).
-
-  Stratum A ("seizure-mimicking non-ictal"). Non-ictal (label 0) segments that
-  are BOTH:
-    * far from any seizure: min distance to nearest seizure > 60 s (candidate
-      margin 120 s), using the baseline min_distance_to_seizure() logic; AND
-    * morphologically seizure-like, per a MULTI-FEATURE morphology score rather
-      than a single amplitude threshold. Candidate features (single-channel-
-      valid): line length (high-frequency / muscle activity), kurtosis (spiky /
-      electrode-pop transients), signal envelope amplitude (movement), variance
-      / power, and a high-band power ratio (EMG band). Features are standardised
-      across the non-ictal pool; segments whose morphology lies within the
-      seizure feature manifold (near the seizure feature-centroid / high
-      composite score) are selected.
-
-  A single high-amplitude or high-variance threshold is deliberately NOT used,
-  as it misses muscle/electrode artefacts that are not the largest-amplitude
-  events.
-
-  Stratum B (control). Far-from-seizure, LOW-morphology quiet background. If
-  false alarms fall on A but not on B, the improvement is specific to hard
-  artefacts rather than a global threshold shift.
-
-  Metric. For each trained model: segment-level false-alarm rate on A, and,
-  after the standard post-processing, false-alarm events per artefact-hour on
-  A; reported alongside B.
-
-  Guardrails.
-    * The stratum is defined ONLY from signal statistics and seizure distance,
-      never from any model's predictions (no circularity).
-    * All thresholds/percentiles are fixed on validation before test.
-    * A random sample (~50-100 segments) of stratum A is visually audited to
-      confirm the segments are genuine non-seizure artefacts; the audit is
-      documented here.
-
-8.3 Layer 3 -- Representation (embedding) analysis
-
-Purpose: show WHY false alarms fall -- that the SSL encoder separates
-artefacts from seizures in feature space where the baseline overlaps them.
-
-  * Extract frozen-encoder pooled embeddings (num_filters-dim) for a balanced
-    held-out sample across groups: seizure, artefact-proxy (A), quiet
-    background (B), and optionally peri-ictal near-seizure.
-  * Encoders compared: ALL runs -- R0 (baseline M3, loaded from DL_WITH_SSL_GA),
-    R1, R2, R3, and R4. Including R1 is essential: because R1 applies the SSL
-    objective on the artefact-poor D0 while R2 applies it on the full
-    distribution, the R0 -> R1 -> R2 progression visually distinguishes whether
-    artefact/seizure separation arises from the OBJECTIVE (H1) or from
-    full-distribution DATA EXPOSURE (H2). R3/R4 complete the broad-fine-tune
-    contrast.
-  * Encoder state analysed: for SSL runs (R1-R3) the frozen encoder as used
-    under the linear-probe protocol (the representation as learned by SSL); for
-    R0/R4, which have no SSL stage, their trained supervised encoder. This
-    asymmetry is unavoidable (R0/R4 have no encoder to freeze) and is stated
-    explicitly in the write-up.
-  * Qualitative: UMAP (primary) and t-SNE (secondary) 2-D projections coloured
-    by group.
-  * Quantitative (computed in the FULL embedding space, not the 2-D
-    projection, to avoid reliance on a single figure):
-      - seizure-vs-artefact linear-probe AUROC (logistic probe on frozen
-        embeddings): higher => better separation;
-      - silhouette score and/or Fisher ratio between the seizure and artefact
-        clusters.
+Rationale for the move: all evaluation-and-reporting content now lives in one
+place (RESULTS_REPORTING_PLAN.txt), which also holds the hypothesis
+traceability matrix, main-text table/figure plan, statistical tests, and the
+min-event sweep mechanics. This section number is retained as a pointer so that
+Sections 9-13 and all existing cross-references remain valid.
 
 --------------------------------------------------------------------------------
-9. CAUSAL COMPARISON MAP (WHAT EACH CONTRAST PROVES)
+9. CAUSAL COMPARISON MAP (WHAT EACH CONTRAST PROVES)  -- MOVED
 --------------------------------------------------------------------------------
 
-  Comparison        Question answered                         Primary evidence
-  ----------------  ----------------------------------------  -----------------
-  R0 -> R1          Does the SSL objective help at all, on    L1 metrics +
-                    identical data? (no data confound)        probe AUROC
-  R1 -> R2          Does full-distribution exposure add       L2 artefact FA
-                    beyond the objective?                     (stratum A)
-  R2 -> R3          Does broad head/threshold fine-tuning     L2 artefact FA +
-                    unlock FA reduction?                      event FA/hr
-  R4 vs R0          Is any gain merely broader fine-tuning    L1 metrics +
-                    without SSL?                              L2 artefact FA
-  R3 vs R4          HEADLINE: SSL vs no-SSL, both broad       L2 artefact FA +
-                    fine-tuning                               L3 separation
-  Frozen vs Full    Did SSL improve the representation or     probe AUROC,
-   (all SSL runs)   only the initialisation?                  silhouette, P1/P2
+The causal comparison map (what each contrast proves, and the primary evidence
+layer for each) has been MOVED to the companion document, alongside the
+hypothesis traceability matrix it complements:
+
+    RESULTS_REPORTING_PLAN.txt, Section 1.2 -- Causal comparison map
+
+Rationale for the move: the causal-contrast narrative belongs with the results-
+organising material (hypotheses, traceability matrix, tables/figures, tests),
+so the reader finds "what each contrast proves" and "how it is reported" in one
+place. The hypotheses themselves remain in Section 2 of this document. This
+section number is retained as a pointer so that Sections 10-13 and all existing
+cross-references remain valid.
 
 --------------------------------------------------------------------------------
 10. METHODOLOGICAL FLOW (SCHEMATIC)
@@ -437,12 +426,12 @@ artefacts from seizures in feature space where the baseline overlaps them.
                         |
   STAGE 3  RUN MATRIX  (5 runs x 2 protocols; Section 7)
                         |
-  STAGE 4  EVALUATION
+  STAGE 4  EVALUATION  (RESULTS_REPORTING_PLAN.txt Section 2)
            L1 standard metrics (eval_utils.py)
            L2 artefact-proxy stratified FA  (stratum A vs control B)
            L3 embedding analysis (UMAP/t-SNE + probe AUROC + silhouette)
                         |
-  STAGE 5  CAUSAL COMPARISONS  (Section 9)  ->  H1-H6
+  STAGE 5  CAUSAL COMPARISONS  (RESULTS_REPORTING_PLAN.txt Section 1.2)  ->  H1-H6
 
 --------------------------------------------------------------------------------
 11. REPRODUCIBILITY AND DOCUMENTATION CONVENTIONS
@@ -479,9 +468,154 @@ artefacts from seizures in feature space where the baseline overlaps them.
   [TBD-5]  Artefact-proxy feature set, standardisation, composite score, and
            selection percentiles; seizure-distance margin (60 s vs 120 s).
   [TBD-6]  Embedding-analysis sample sizes per group.
+  [TBD-7]  Min-event operating point -- selected on the validation
+           Recall-vs-FAR/hr Pareto / impact plots (bottom-right ideal region) as
+           in DL_WITH_SSL_GA via postproc_sweep.py. An optional deterministic
+           rule (min normalised distance to the bottom-right corner) may be used
+           for full reproducibility. NO FAR/hr ceiling. Recorded once chosen.
+  [TBD-8]  Exact per-partition subject and segment counts (train / val / test),
+           read from the manifest metadata on the cluster (Section 3.1).
 
 --------------------------------------------------------------------------------
-13. REFERENCES (TO BE COMPLETED AT WRITE-UP)
+13. IMPLEMENTATION / BUILD PLAN (METHOD SCRIPTS)
+--------------------------------------------------------------------------------
+
+Order in which the METHOD code is written. Evaluation-stage scripts are recorded
+separately in RESULTS_REPORTING_PLAN.txt Section 10. Scripts are built in
+dependency order, and a VERTICAL SLICE on R1 alone (SSL pretrain -> fine-tune ->
+cache predictions -> one metric) is completed and verified BEFORE scaling to
+R2-R4 and adding evaluation Layers 2/3, so integration bugs surface on one cheap
+run rather than after four expensive ones.
+
+Global build decisions (shared with the evaluation plan).
+  * VENDORING: the baseline encoder (tcn_utils.MultiScaleTCN) and evaluation
+    utilities (eval_utils.py) are VENDORED as a PINNED COPY into src/vendor/
+    (source commit hash recorded), NOT imported live -- the repo is
+    self-contained and the encoder cannot drift from R0.
+  * ORCHESTRATION: every stage has a Slurm .sh wrapper matching the baseline
+    DL_WITH_SSL_GA .sh convention.
+  * Deterministic seeding (seed 42), as in the baseline.
+
+Directory layout (repo):
+  src/       core importable modules
+  scripts/   runnable drivers + Slurm .sh wrappers (one per stage)
+  configs/   per-run configs (R1..R4) + global paths / constants
+
+Cluster paths and OUTPUT layout.
+  * INPUTS (derived): /home/people/22206468/scratch/INPUT_SSL_DATA_DISTRIBUTION/
+    -- the D_broad manifest, artefact-proxy stratum lists, and any derived input
+    are WRITTEN here and read back (as the parent used INPUT_DATA/
+    data_splits_outputs/). Reused parent manifests (D0, D_full, val/test) are
+    read from the parent's data_splits_outputs/.
+  * OUTPUTS: /home/people/22206468/scratch/OUTPUT_SSL_DATA_DISTRIBUTION/
+      R1/  SSL_PRETRAINING/  FROZEN_FINE_TUNING/  FULL_FINE_TUNING/
+      R2/  SSL_PRETRAINING/  FROZEN_FINE_TUNING/  FULL_FINE_TUNING/
+      R3/  SSL_PRETRAINING/  FROZEN_FINE_TUNING/  FULL_FINE_TUNING/
+      R4/                                          FULL_FINE_TUNING/  (random
+                                                   init; full-only)
+      ANALYSIS/  -- cross-run outputs (embedding analysis, tables, figures,
+                    benchmark) that are not per-run.
+    Under each fine-tuning folder the post-processing sweep writes its baseline
+    output tree (RESULTS_REPORTING_PLAN.txt Section 6.1).
+
+  * SHARED D_full PRETRAINING: R2 and R3 pretrain on D_full with the IDENTICAL
+    recipe, so the encoder is trained ONCE, not twice (the most expensive step;
+    ~28.7M segments). The shared encoder is the canonical artefact reused by
+    both. R2 and R3 EACH still keep their own logs / outputs in their respective
+    SSL_PRETRAINING folders, recording provenance of the shared encoder. R1
+    pretrains separately on D0. => TWO SSL pretrainings total: D0 (for R1) and
+    D_full (for R2 + R3).
+
+  * SINGLE SEED (42) throughout -- one seed level only, no per-seed folders.
+    Reproducible and matched to the baseline; statistical variance comes from
+    the subject population, not repeated seeds (RESULTS_REPORTING_PLAN.txt
+    Section 5 / 9.6).
+
+  * LOGGING: every script writes a log; specifics in the Infrastructure
+    conventions block below.
+
+Infrastructure conventions (MIRROR DL_WITH_SSL_GA; adapt only where noted).
+
+  SEEDING -- src/common/seed.py set_seed(42): seeds python random, numpy, torch
+    CPU (manual_seed), torch CUDA all devices (manual_seed_all); sets
+    cudnn.deterministic=True, cudnn.benchmark=False. Call at main() entry AND
+    immediately before model weight init (identical start every run).
+
+  CHECKPOINTING -- per stage (SSL pretrain / frozen / full), under
+    <stage>/checkpoints/. save_checkpoint() payload: epoch, model_state,
+    optimiser_state, scheduler_state, monitor_metric, train_loss, best_metric,
+    best_epoch, epochs_no_imp (early-stop counter), hyperparameters, timestamp,
+    and embedded best_model_state (CPU-cloned best weights). Wrapped in
+    try/except (non-fatal). Three files:
+      {prefix}_latest.pt  -- written EVERY epoch (clean resume);
+      {prefix}_best.pt    -- written on improvement;
+      {prefix}_epoch_*.pt -- periodic every CHECKPOINT_FREQ=5, pruned to
+                             KEEP_CKPTS=3 (best/latest never pruned).
+    ADAPTATION -- the "best" / early-stopping metric differs by stage:
+      * SSL pretraining  -> LOWEST validation RECONSTRUCTION loss;
+      * frozen / full FT -> HIGHEST validation MACRO-F1 (as baseline).
+    RNG state is NOT saved (resume not bit-identical; acceptable, per baseline).
+
+  RESUME -- at main() start: prefer {prefix}_latest.pt, fallback
+    {prefix}_best.pt, else fresh; restore model/optimiser/scheduler/best/
+    epochs_no_imp; start_epoch = ckpt["epoch"]+1; loop range(start_epoch,
+    MAX_EPOCHS+1). Re-submitting the same Slurm job AUTO-RESUMES; delete
+    checkpoints/ to restart.
+
+  LOGGING -- setup_logging(): named logger; DEBUG FileHandler (append mode "a")
+    to <stage>/logs/<script>.log + INFO StreamHandler(stdout); format
+    "%(asctime)s | %(levelname)s | %(message)s"; handlers.clear() first (no
+    duplicate handlers on resume). One log file per script (appended across
+    resumes; Slurm %j files are the per-run copies). Per-epoch line: epoch,
+    loss, monitor metric, LR, best, patience, train/val timing. Start/end
+    banners + an output-inventory (OK/MISSING) check at the end.
+
+  OUTPUT (per run x stage): <stage>/{checkpoints/, logs/, figures/} + final
+    weights (CPU state_dict .pt) + json/csv artifacts + predictions .npz
+    (enriched with chronology). Nested under OUTPUT_SSL_DATA_DISTRIBUTION/R{n}/
+    {SSL_PRETRAINING|FROZEN_FINE_TUNING|FULL_FINE_TUNING}/.
+
+  SLURM .sh (one per stage): #!/bin/bash -l; SBATCH --job-name, -N 1,
+    --ntasks=1, --cpus-per-task=10, --partition=csgpu, --gres=gpu:1, -t <long>,
+    --mail-type=ALL, --mail-user=mercy.edoho@ucdconnect.ie, --output=...-%j.out;
+    diagnostics echoes (date, hostname, JOB ID, nvidia-smi, CPU alloc);
+    module purge && module load anaconda3 && conda activate torch_v100_py310;
+    cd <repo>; python <driver>.py. (Reuse the baseline conda env
+    torch_v100_py310.)
+
+Phase 0 -- Scaffolding (written first; unblocks everything)
+  1. src/common/config.py, seed.py -- paths, constants, deterministic seeding.
+  2. src/vendor/ -- pinned copy of tcn_utils.py (MultiScaleTCN) + eval_utils.py
+     (commit hash recorded).
+  3. scripts/audit_manifests.py -- read manifest metadata; verify D_full
+     enumeration; record train/val/test counts. Resolves [TBD-8].
+
+Phase 1 -- Data layer
+  4. src/data/datasets.py -- SSLWindowDataset (masked, unlabeled) + reuse of the
+     vendored EEGSegmentDataset for supervised loading.
+  5. scripts/build_broad_manifest.py -- construct D_broad from data_splits.json
+     train (adapts create_balanced_splits.py). Resolves [TBD-4].
+
+Phase 2 -- SSL pretraining (the new core)
+  6. src/models/masked_autoencoder.py -- M3 encoder + span-masking + decoder +
+     reconstruction loss. Resolves [TBD-1, TBD-2].
+  7. scripts/pretrain_ssl.py (+ .sh) -- SSL training loop; validation
+     reconstruction monitor; checkpoint-resume. Resolves [TBD-3]. Runs: R1 on
+     D0; R2 & R3 on D_full (train subjects only; Section 5.4).
+
+Phase 3 -- Downstream adaptation
+  8. scripts/finetune.py (+ .sh) -- load pretrained encoder; attach linear head;
+     P1 frozen (linear probe) / P2 full fine-tune; recipe vendored from the M3
+     baseline (AdamW, cosine LR, BCEWithLogitsLoss, early stop on val macro-F1).
+  9. configs/R1..R4.yaml -- per-run wiring (encoder init, SSL data, fine-tune
+     data, protocol). R1-R4 developed here; R0 reused (Section 7).
+
+Evaluation-stage scripts (prediction caching, min-event sweep, artefact-proxy,
+embedding analysis, statistics, tables/figures) continue in
+RESULTS_REPORTING_PLAN.txt Section 10.
+
+--------------------------------------------------------------------------------
+14. REFERENCES (TO BE COMPLETED AT WRITE-UP)
 --------------------------------------------------------------------------------
 
   Baseline project methods    : DL_WITH_SSL_GA/STUDY_REPORT.txt

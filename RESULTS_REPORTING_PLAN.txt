@@ -13,14 +13,18 @@ Scope note      : The study is NOT split into separate papers. Frozen and full
                   STUDY_REPORT publication-scope decision). This plan keeps the
                   two protocols side by side so the representation-vs-
                   initialisation contrast (H6) stays visible.
+Contents note   : The EVALUATION FRAMEWORK (three layers) -- what is measured --
+                  lives here in Section 2 (moved from STUDY_REPORT, which now
+                  points here). Sections 3+ define how those measurements are
+                  organised, tamed, and tested.
 
 --------------------------------------------------------------------------------
 1. CORE ORGANISING PRINCIPLE
 --------------------------------------------------------------------------------
 
 Report BY HYPOTHESIS / COMPARISON, not by run. Every main-text table and figure
-exists to answer one contrast from the causal chain (STUDY_REPORT Sections 2
-and 9):
+exists to answer one contrast from the causal chain (hypotheses in STUDY_REPORT
+Section 2; causal comparison map in Section 1.2 below):
 
     R0 -> R1   H1  does the SSL objective help on identical data?
     R1 -> R2   H2  does full-distribution exposure add beyond the objective?
@@ -50,27 +54,195 @@ is orphaned; no claimed difference is asserted without a test.
                                                artefact FA         bootstrap
   H5   R3 vs R4        Table 2, Fig 3          artefact FA;        paired
        (HEADLINE)                              event FAR/hr        bootstrap
-  H6   Frozen vs Full  Fig 4, Tables 1-2       see Section 4.1     Wilcoxon
+  H6   Frozen vs Full  Fig 4, Tables 1-2       see Section 5.1     Wilcoxon
        (all SSL runs)                          (two quantities)    signed-rank
 
   Notes:
     * "artefact FA (A)" = false-alarm rate on the artefact-proxy stratum A
       (with control stratum B reported alongside).
-    * All tests are PAIRED and computed at SUBJECT level (Section 4).
+    * All tests are PAIRED and computed at SUBJECT level (Section 5).
     * The optional shorter-min-event aim (if elevated to a hypothesis H7) would
       be homed in Fig 2 (the Pareto sweep); it is currently reported there as a
       descriptive result, not a tested hypothesis.
 
+1.2 Causal comparison map (what each contrast PROVES)
+
+The traceability matrix (1.1) is the completeness/tests checklist. This map is
+the narrative counterpart: for each contrast it states the QUESTION answered and
+the PRIMARY EVIDENCE (evaluation layer). Moved here from STUDY_REPORT Section 9
+for flow; STUDY_REPORT now points here. ("L1/L2/L3" = the three evaluation
+layers of Section 2; P1/P2 = the frozen / full protocols.)
+
+  Comparison        Question answered                         Primary evidence
+  ----------------  ----------------------------------------  -----------------
+  R0 -> R1          Does the SSL objective help at all, on    L1 metrics +
+                    identical data? (no data confound)        probe AUROC
+  R1 -> R2          Does full-distribution exposure add       L2 artefact FA
+                    beyond the objective?                     (stratum A)
+  R2 -> R3          Does broad head/threshold fine-tuning     L2 artefact FA +
+                    unlock FA reduction?                      event FA/hr
+  R4 vs R0          Is any gain merely broader fine-tuning    L1 metrics +
+                    without SSL?                              L2 artefact FA
+  R3 vs R4          HEADLINE: SSL vs no-SSL, both broad       L2 artefact FA +
+                    fine-tuning                               L3 separation
+  Frozen vs Full    Did SSL improve the representation or     probe AUROC,
+   (all SSL runs)   only the initialisation?                  silhouette, P1/P2
+
 --------------------------------------------------------------------------------
-2. MAIN-TEXT TABLES AND FIGURES
+2. EVALUATION FRAMEWORK (THREE LAYERS) -- WHAT IS MEASURED
 --------------------------------------------------------------------------------
 
-Table 1 -- Headline performance.
-    One row per run (R0-R4). Columns: sensitivity, specificity, AUROC, AUPRC,
-    event FAR/hr, mean latency. BOTH protocols shown as paired sub-columns
-    (Frozen | Full). Reported at ONE reference min-event (25 s) for
-    readability; the full sweep is a figure (below) and supplementary tables.
-    Answers overall standing of each run.
+All evaluation is performed on the held-out validation/test partitions of the
+FULL, un-downsampled stream. Layer 1 uses the baseline eval_utils.py unchanged
+for direct comparability with M3. (Moved here from STUDY_REPORT Section 8;
+STUDY_REPORT now points to this section.)
+
+2.1 Layer 1 -- Standard performance metrics (eval_utils.py)
+
+  This layer reproduces the FULL baseline metric set (eval_utils.py) unchanged,
+  so every number is directly comparable to M3. Exact metric keys below.
+
+  Segment level : accuracy, precision, recall (= sensitivity), specificity,
+                  Youden's J, macro-F1 (f1_macro), MCC, AUROC, AUPRC, and the
+                  segment false-alarm rate
+                  (far_per_hour_seg_CORRECTED_2_5s_denom). Confusion counts
+                  tp/fp/fn/tn are retained.
+  Event level   : per-mouse chronological predictions are post-processed by a
+                  FIXED, ORDERED four-stage pipeline, then matched to ground
+                  truth by any-overlap. Reported metrics (baseline
+                  evaluate_event_level, full set):
+                    - raw counts: n_predicted_events, tp, fp, fn;
+                    - precision, recall (= sensitivity), F1;
+                    - false alarms per hour (far_per_hour_event_CORRECTED);
+                    - false alarms per 24 h (= FAR/hr x 24), reported for
+                      cross-study comparability (Table 4);
+                    - mean detection latency (mean_detection_latency_sec).
+                  BOTH aggregate AND per-subject (per-mouse) versions are
+                  produced; the per-subject values feed the subject-level
+                  statistics in Section 5. Raw fp counts are retained (not only
+                  the derived FAR/hr), since reviewers expect the count behind
+                  the rate.
+
+                  Post-processing order (applied in this exact sequence):
+                    1. Probability smoothing        (moving window = 3 segments)
+                    2. Minimum-event filtering       (drop events < min-event; see
+                                                      MIN-EVENT SWEEP below)
+                    3. Refractory-period merging     (merge events < 30 s apart)
+                    4. Maximum-duration filtering    (drop events > 120 s)
+                  The decision rule P > 0.5 is applied to the smoothed
+                  probabilities (after stage 1) to form candidate events.
+
+                  MIN-EVENT SWEEP AND OPERATING-POINT SELECTION -- FOLLOWS
+                  DL_WITH_SSL_GA EXACTLY (reuse/adapt postproc_sweep.py, extended
+                  across this study's runs x protocols; no new machinery). Event
+                  metrics are computed OFFLINE on cached predictions at min-event
+                  durations of 10, 15, 20, 25, and 30 s; the post-processing
+                  order is fixed to the baseline's adopted min_then_refractory.
+                  The operating point is SELECTED ON VALIDATION from the
+                  Recall-vs-FAR/hr Pareto / impact plots -- the point in the
+                  BOTTOM-RIGHT ideal region (high sensitivity, low FAR/hr) --
+                  exactly as the baseline selected its 25 s [TBD-7]; then applied
+                  on test. The same script emits, per variant, the comparison CSV
+                  and the BASELINE 2 x 3 IMPACT FIGURE -- rows: val (top) / test
+                  (bottom); columns: (1) Event Precision/Recall/F1 vs min-event,
+                  (2) Event-level FAR/hr vs min-event, (3) Recall-vs-FAR/hr Pareto
+                  (bottom-right = ideal, points labelled by duration). Because the
+                  order is fixed to min_then_refractory, each panel shows a SINGLE
+                  series (not the baseline's two-order overlay). Main text shows
+                  this figure for the headline variant(s) (Fig 2); per-variant
+                  figures for all runs x protocols go to supplementary.
+                  (Provenance / script: Section 6.)
+
+2.2 Layer 2 -- Artefact-proxy stratified false-alarm number
+
+Because artefacts are unlabeled, a label-free proxy identifies non-ictal
+segments that are almost certainly artefacts AND morphologically resemble
+seizures (the segments most likely to trigger false alarms).
+
+  Stratum A ("seizure-mimicking non-ictal"). Non-ictal (label 0) segments that
+  are BOTH:
+    * far from any seizure: min distance to nearest seizure > 60 s (candidate
+      margin 120 s), using the baseline min_distance_to_seizure() logic; AND
+    * morphologically seizure-like, per a MULTI-FEATURE morphology score rather
+      than a single amplitude threshold. Candidate features (single-channel-
+      valid): line length (high-frequency / muscle activity), kurtosis (spiky /
+      electrode-pop transients), signal envelope amplitude (movement), variance
+      / power, and a high-band power ratio (EMG band). Features are standardised
+      across the non-ictal pool; segments whose morphology lies within the
+      seizure feature manifold (near the seizure feature-centroid / high
+      composite score) are selected.
+
+  A single high-amplitude or high-variance threshold is deliberately NOT used,
+  as it misses muscle/electrode artefacts that are not the largest-amplitude
+  events.
+
+  Stratum B (control). Far-from-seizure, LOW-morphology quiet background. If
+  false alarms fall on A but not on B, the improvement is specific to hard
+  artefacts rather than a global threshold shift.
+
+  Metric. For each trained model: segment-level false-alarm rate on A, and,
+  after the standard post-processing, false-alarm events per artefact-hour on
+  A; reported alongside B. This is the primary metric for H2, H3, and the H5
+  headline (Table 2).
+
+  Guardrails.
+    * The stratum is defined ONLY from signal statistics and seizure distance,
+      never from any model's predictions (no circularity).
+    * All thresholds/percentiles are fixed on validation before test.
+    * A random sample (~50-100 segments) of stratum A is visually audited to
+      confirm the segments are genuine non-seizure artefacts; the audit is
+      documented in supplementary (Section 7).
+
+2.3 Layer 3 -- Representation (embedding) analysis
+
+Purpose: show WHY false alarms fall -- that the SSL encoder separates
+artefacts from seizures in feature space where the baseline overlaps them.
+
+  * Extract frozen-encoder pooled embeddings (num_filters-dim) for a balanced
+    held-out sample across groups: seizure, artefact-proxy (A), quiet
+    background (B), and optionally peri-ictal near-seizure.
+  * Encoders compared: ALL runs -- R0 (baseline M3, loaded from DL_WITH_SSL_GA),
+    R1, R2, R3, and R4. Including R1 is essential: because R1 applies the SSL
+    objective on the artefact-poor D0 while R2 applies it on the full
+    distribution, the R0 -> R1 -> R2 progression visually distinguishes whether
+    artefact/seizure separation arises from the OBJECTIVE (H1) or from
+    full-distribution DATA EXPOSURE (H2). R3/R4 complete the broad-fine-tune
+    contrast.
+  * Encoder state analysed: for SSL runs (R1-R3) the frozen encoder as used
+    under the linear-probe protocol (the representation as learned by SSL); for
+    R0/R4, which have no SSL stage, their trained supervised encoder. This
+    asymmetry is unavoidable (R0/R4 have no encoder to freeze) and is stated
+    explicitly in the write-up.
+  * Qualitative: UMAP (primary) and t-SNE (secondary) 2-D projections coloured
+    by group (Figure 3).
+  * Quantitative (computed in the FULL embedding space, not the 2-D
+    projection, to avoid reliance on a single figure; Table 3):
+      - seizure-vs-artefact linear-probe AUROC (logistic probe on frozen
+        embeddings): higher => better separation;
+      - silhouette score and/or Fisher ratio between the seizure and artefact
+        clusters.
+
+--------------------------------------------------------------------------------
+3. MAIN-TEXT TABLES AND FIGURES
+--------------------------------------------------------------------------------
+
+Table 1 -- Headline performance (columns GROUPED and LABELLED by level).
+    One row per run (R0-R4); BOTH protocols shown as paired sub-columns
+    (Frozen | Full). Columns are split by level because the two depend on
+    different things:
+      * SEGMENT-LEVEL (operating-point-INDEPENDENT): Accuracy, recall, precision, specificity, F1-score, AUROC, AP, specificity,
+        MCC. Computed from per-segment probabilities BEFORE post-processing, so
+        they do NOT vary with min-event -- ONE value each (not repeated per
+        operating point).
+      * EVENT-LEVEL (operating-point-DEPENDENT): sensitivity, precision, F1-score, event FAR/hr, mean
+        detection latency. Reported at each model's validation-selected
+        operating point (Section 2.1). The full min-event sweep -- including the
+        25 s baseline point -- is shown in Figure 2 and the supplementary
+        per-duration tables, so no columns are doubled here.
+    Disambiguation: "sensitivity" in the event block is EVENT sensitivity;
+    segment-level recall/sensitivity, if shown, is labelled separately.
+    The full min-event sweep is Figure 2; exhaustive per-duration tables are
+    supplementary. Answers overall standing of each run.
 
 Table 2 -- Artefact mechanism (the target result).
     Rows = runs. Columns = false-alarm rate on stratum A (artefact-proxy) vs
@@ -85,20 +257,50 @@ Table 3 -- Representation separation (the "why").
     silhouette / Fisher ratio (computed in the full embedding space). Answers
     H1 vs H2 and supports the mechanism claim.
 
+Table 4 -- Cross-study benchmark comparison (SECONDARY / positioning).
+    Purpose: place this study's BEST variant against the literature so the best-
+    performing model can be compared with other seizure-detection studies. It is
+    a secondary, positioning result -- NOT a hypothesis test (it has no row in
+    the Section 1.1 matrix); the causal chain (R0-R4) remains the primary
+    contribution.
+    * Best variant: the single best run + protocol, declared by highest TEST
+      performance at its validation-selected operating point (Section 2.1) --
+      not cherry-picked post hoc. The run/protocol is stated.
+    * Metrics in the conventions other papers use: event SENSITIVITY,
+      FALSE ALARMS PER 24 h (= FAR/hr x 24) AND FAR/hr, and mean detection
+      latency -- so the numbers drop straight into cross-study tables.
+    * A CAVEATS column states, for each cited study, what differs (species,
+      channels/montage, dataset, annotation protocol, metric definitions).
+    Framing rule: CONTEXTUAL POSITIONING, not a head-to-head / SOTA claim. This
+    study is SINGLE-CHANNEL MOUSE EEG, so comparison is weighted toward rodent /
+    single-channel / similar-annotation work; where human multi-channel studies
+    are cited, the species/montage/dataset differences are stated explicitly so
+    the reader calibrates rather than reading it as "we beat X".
+
 Figure 1 -- Methodological framework (from STUDY_REPORT Section 10).
 
-Figure 2 -- Min-event sweep (Pareto).
-    Sensitivity vs FAR/hr Pareto curves, one curve per run, markers at
-    {10,15,20,25,30} s. Replaces five per-run tables with a single figure and
-    directly shows the shorter-duration aim. This mirrors the baseline
-    postproc_sweep Pareto panel (Section 5 below).
+Figure 2 -- Min-event impact figure (baseline postproc_sweep format).
+    Follows the DL_WITH_SSL_GA impact figure exactly, produced by the reused
+    postproc_sweep.py. A 2 x 3 panel grid:
+      rows    : validation (top), test (bottom);
+      columns : (1) Event Precision / Recall / F1 vs MIN_EVENT_SEC;
+                (2) Event-level FAR/hr vs MIN_EVENT_SEC;
+                (3) Recall(sensitivity)-vs-FAR/hr Pareto, points labelled by
+                    duration {10,15,20,25,30} s, bottom-right = ideal.
+    Because this study FIXES the post-processing order to min_then_refractory
+    (the baseline's order ablation is already settled), each panel shows a
+    SINGLE series -- not the baseline's two-order overlay. The Pareto panel
+    (column 3) is where the min-event operating point is read (Section 2.1), and
+    the figure directly shows the shorter-duration aim. Main text shows this
+    figure for the headline variant(s); the per-variant figures for all runs x
+    protocols are in supplementary. (Baseline format confirmed: Section 6.)
 
 Figure 3 -- Embedding analysis.
     UMAP panels for R0/R1/R2/R3 (and R4) coloured by group (seizure /
     artefact-proxy / background). R1 is included so R0 -> R1 -> R2 separates the
     OBJECTIVE effect from the DATA-EXPOSURE effect.
 
-Figure 4 -- Frozen vs full (H6; see Section 4.1 for the exact quantities).
+Figure 4 -- Frozen vs full (H6; see Section 5.1 for the exact quantities).
     Paired plot of the headline metric under both protocols across runs,
     designed to carry the TWO specific H6 quantities:
       (Q1) does the FROZEN SSL model (encoder locked, linear head only) already
@@ -110,26 +312,30 @@ Figure 4 -- Frozen vs full (H6; see Section 4.1 for the exact quantities).
     Both quantities are stated numerically, not left to visual impression.
 
 --------------------------------------------------------------------------------
-3. TAMING THE TWO VOLUME MULTIPLIERS
+4. TAMING THE TWO VOLUME MULTIPLIERS
 --------------------------------------------------------------------------------
 
-3.1 The min-event sweep (x5) -> a CURVE, not five tables.
+4.1 The min-event sweep (x5) -> a CURVE, not five tables.
     Present as Recall(sensitivity) vs FAR/hr Pareto curves with the five
     durations as markers on each run's curve. More legible than five tables and
     it is exactly the trade-off the project claims to improve. The five-row-
     per-run numeric tables live in supplementary.
 
-3.2 The two protocols (x2) -> PAIRED columns / panels, never separate tables.
+4.2 The two protocols (x2) -> PAIRED columns / panels, never separate tables.
     Keeping Frozen and Full side by side is what makes H6 visible; splitting
     them into separate tables destroys the contrast.
 
 --------------------------------------------------------------------------------
-4. STATISTICAL REPORTING
+5. STATISTICAL REPORTING
 --------------------------------------------------------------------------------
 
-  * Multiple seeds for at least the headline runs (R2/R3/R4): report
-    mean +/- 95% CI, not single-seed points. The baseline used a single seed
-    (42); the NEW claims require a variance estimate.
+  * SINGLE SEED (42), as in the baseline, for full reproducibility. Statistical
+    variance for every claim comes from the SUBJECT population -- the per-subject
+    paired tests below resample MICE, which answers "is the difference real?"
+    without repeating seeds. A single seed is therefore statistically defensible.
+    (Model-INITIALISATION variance -- "did one lucky init win?" -- is a separate,
+    secondary question; if a reviewer challenges it, a small seed sweep on the
+    headline pair R3/R4 can be added as a targeted rebuttal, not built now.)
   * Every CLAIMED contrast (H1-H6) is backed by a significance test -- not just
     a selected few. Test choice follows the metric type:
       - AUROC differences            -> DeLong test;
@@ -144,7 +350,7 @@ Figure 4 -- Frozen vs full (H6; see Section 4.1 for the exact quantities).
       H3 R2->R3 : paired bootstrap (artefact FA and event FAR/hr)
       H4 R4 vs R0: DeLong (AUROC) + paired bootstrap (artefact FA)
       H5 R3 vs R4: paired bootstrap (artefact FA and event FAR/hr)  [HEADLINE]
-      H6 frozen vs full: Wilcoxon signed-rank on the two quantities in 4.1
+      H6 frozen vs full: Wilcoxon signed-rank on the two quantities in 5.1
   * Multiple-comparison control. Because several contrasts are tested, p-values
     are corrected across the H1-H6 family (Holm-Bonferroni) and both raw and
     corrected values are reported.
@@ -154,8 +360,15 @@ Figure 4 -- Frozen vs full (H6; see Section 4.1 for the exact quantities).
     pairing unit.
   * All headline numbers come from the TEST partition (validation is the
     development set; see STUDY_REPORT Sections 5.4 and 6.1).
+  * Operating point for EVENT-level tests. Event-level significance tests are
+    run at each model's validation-selected best min-event (the primary
+    operating point; criterion in Section 2.1), AND repeated at the common 25 s
+    baseline point. A headline claim (e.g. H5, R3 vs R4) is reported as robust
+    only if it holds at BOTH points. The full sweep (Fig 2) stays descriptive;
+    significance is not tested at all five durations (that would multiply the
+    comparisons and muddy the Holm-Bonferroni correction).
 
-4.1 The two H6 quantities (representation vs initialisation)
+5.1 The two H6 quantities (representation vs initialisation)
 
   H6 claims SSL improves the learned REPRESENTATION, not merely the training
   starting point. Two numbers decide it (see Figure 4):
@@ -168,7 +381,7 @@ Figure 4 -- Frozen vs full (H6; see Section 4.1 for the exact quantities).
   Both are reported with subject-level Wilcoxon signed-rank tests and CIs.
 
 --------------------------------------------------------------------------------
-5. HOW THE BASELINE MIN-EVENT SWEEP WORKED (CONFIRMED) AND WHAT WE ADOPT
+6. HOW THE BASELINE MIN-EVENT SWEEP WORKED (CONFIRMED) AND WHAT WE ADOPT
 --------------------------------------------------------------------------------
 
 Confirmed from DL_WITH_SSL_GA/postproc_sweep.py and eval_utils.py:
@@ -204,13 +417,70 @@ What THIS project adopts and changes:
     refractory -> max-duration sequence (= min_then_refractory). We do NOT
     sweep the order (the baseline's order ablation is settled); we sweep ONLY
     MIN_EVENT_SEC {10,15,20,25,30}.
-  * DO NOT select a single min-event on validation. The sweep is reported in
-    full as a curve; no post-processing hyperparameter is chosen on validation
-    (STUDY_REPORT Section 6.1). 25 s is used only as the reference operating
-    point in Table 1 for readability and baseline comparability.
+  * SELECT the min-event OPERATING POINT on validation, per model, from the
+    Recall-vs-FAR/hr Pareto / impact plots -- the point in the BOTTOM-RIGHT
+    ideal region (high sensitivity, low FAR/hr) -- EXACTLY as the baseline
+    selected its 25 s, by REUSING postproc_sweep.py rather than adding new
+    machinery [TBD-7]; apply it on test. The decision THRESHOLD remains fixed at
+    P > 0.5 (not tuned). The full sweep (all durations incl. 25 s) is reported
+    as the Pareto curve / impact figure. Selection is on VALIDATION, never test.
+
+6.1 Output parity with the baseline (required) plus permitted extensions
+
+  The sweep MUST reproduce the same output ORGANISATION and artifact TYPES as
+  the baseline postproc_sweep.py, so this project's outputs are drop-in
+  comparable with M3. In the baseline one "variant" = one model (M1-M4); in THIS
+  project one "variant" = one RUN x PROTOCOL (e.g. R2-frozen, R3-full).
+
+  (i) DIRECTORY ORGANISATION (per variant, mirroring the baseline tree):
+        <variant>/.../post_process_varing_sec/
+            val/   <order>/  MIN_EVENT_SEC_10s/ 15s/ 20s/ 25s/ 30s/
+            test/  <order>/  MIN_EVENT_SEC_10s/ 15s/ 20s/ 25s/ 30s/
+            comparison_val_vs_test.csv
+            impact_val_vs_test.png
+            postproc_sweep.log
+      Train, if run, goes to the SIBLING root post_process_varing_sec_train/
+      (comparison_train.csv, impact_train.png), never mixed with val/test.
+      Since the order is fixed to min_then_refractory, only that <order> subtree
+      is populated (the refractory_then_min branch is not swept).
+
+  (ii) PER-CONFIGURATION EVENT BUNDLE (eval_utils.write_event_level_bundle),
+       one directory per MIN_EVENT_SEC_Xs:
+         summary.json, event_details.csv,
+         classification_report_row1.json, classification_report_row2.json.
+
+  (iii) COMPARISON CSV with the baseline columns (exact):
+         partition, order, min_event_sec, n_predicted_events, tp, fp, fn,
+         event_precision, event_recall, event_f1, event_far_per_hour,
+         event_mean_latency_sec, seg_row2_f1_macro, seg_row2_auroc,
+         seg_row2_precision, seg_row2_recall, seg_row2_specificity,
+         seg_row2_far_per_hour, seg_row2_mcc.
+
+  (iv) IMPACT FIGURE in the baseline format: N x 3 panels (rows = partitions:
+       val+test => 2 rows, train => 1 row; columns = (1) P/R/F1 vs min-event,
+       (2) FAR/hr vs min-event, (3) Recall-vs-FAR/hr Pareto, bottom-right =
+       ideal). With order fixed, each panel shows a SINGLE series.
+
+  (v) SWEEP LOG (postproc_sweep.log).
+
+  Extended across THIS project's structure:
+    * "variant" = RUN (R0-R4) x PROTOCOL (frozen / full): one top-level output
+      directory per variant, and the comparison CSV gains "run" and "protocol"
+      columns (in addition to the baseline columns above).
+    * Order fixed to min_then_refractory (single <order> subtree; the grid is
+      MIN_EVENT_SEC {10,15,20,25,30} only).
+    * Main-text Figure 2 = the impact figure for the headline variant(s);
+      per-variant impact figures for all runs x protocols go to supplementary.
+
+  Additional outputs are PERMITTED as the investigation requires, e.g.:
+    * artefact-proxy stratified FA (stratum A vs control B) reported per
+      min-event alongside the standard columns (Layer 2, Section 2.2);
+    * per-subject sweep tables (supporting the Section 5 subject-level tests);
+    * any extra columns/figures a specific question demands.
+  Additions must EXTEND, never replace, the baseline-parity outputs above.
 
 --------------------------------------------------------------------------------
-6. SUPPLEMENTARY MATERIAL (THE EXHAUSTIVE GRID)
+7. SUPPLEMENTARY MATERIAL (THE EXHAUSTIVE GRID)
 --------------------------------------------------------------------------------
 
   * Full per-run x per-protocol x per-min-event numeric tables (all segment-
@@ -223,13 +493,139 @@ What THIS project adopts and changes:
     sample.
 
 --------------------------------------------------------------------------------
-7. ONE-LINE SUMMARY
+8. ONE-LINE SUMMARY
 --------------------------------------------------------------------------------
 
 Main text = the causal story in ~4 tables + ~4 figures, protocols paired,
 min-event as a Pareto curve, headline numbers from test with CIs.
 Supplementary = the complete grid for reproducibility. Nothing lost; the paper
 reads as an argument, not a dump.
+
+--------------------------------------------------------------------------------
+9. STATISTICS PRIMER (PLAIN-LANGUAGE APPENDIX TO SECTION 5)
+--------------------------------------------------------------------------------
+
+Plain-language companion to Section 5, for readers new to statistics. It does
+not change the plan; it explains WHY each test is used and HOW the headline
+claim is produced.
+
+9.1 The one question every test answers
+
+  When R3 (SSL) shows fewer false alarms than R4 (no SSL), the worry is: did R3
+  really do better, or did it just get lucky on this particular set of mice?
+  Every test below answers exactly that -- "is this difference real, or could
+  it be chance?"
+
+9.2 Two ways to express the answer
+
+  * p-value: the probability of seeing a difference this large BY LUCK ALONE if
+    the two models were truly equal. Small p (conventionally < 0.05) means luck
+    is an unlikely explanation, so the difference is probably real.
+  * Confidence interval (CI): a plausible range for the true difference, e.g.
+    "1.8 fewer false alarms/hour, 95% CI [0.9, 2.7]". If the range does NOT
+    include zero, the difference is statistically real. CIs are preferred
+    because they also show HOW BIG the effect is, not just whether it exists.
+
+9.3 The key setup: "paired, per mouse"
+
+  Every metric is computed PER MOUSE, then the two models are compared mouse by
+  mouse.
+  * Why per mouse: mice differ hugely (1-178 seizures each). Pooling all
+    segments lets a few seizure-heavy mice dominate (pseudoreplication).
+  * Why paired: for each mouse we take model-A-score minus model-B-score.
+    Comparing on the SAME mouse cancels out "this mouse is just easy/hard"
+    (like testing the same students under two teaching methods).
+  So the raw material for most tests is a LIST OF PER-MOUSE DIFFERENCES (one
+  number per mouse).
+
+9.4 Which tool for which kind of number
+
+  * Paired bootstrap -- for RATES (false alarms/hour, sensitivity).
+    "Bootstrap" = with, say, 20 mice, draw a new fake sample of 20 mice WITH
+    REPLACEMENT (some appear twice, some not at all) and recompute the average
+    difference; repeat ~10,000 times. The middle 95% of those answers IS the
+    confidence interval. Intuitively: "reshuffle the mice many times and see
+    how much the answer wobbles." Makes no bell-curve assumption -> robust for
+    messy rate metrics.
+  * DeLong test -- for AUROC (how well the model ranks seizures above
+    non-seizures). AUROC needs a purpose-built comparison test; DeLong is the
+    standard, expected one, so reviewers accept it without question.
+  * McNemar test -- for YES/NO predictions on the SAME segments. It looks only
+    at segments where the two models DISAGREE: how many did A get right that B
+    got wrong, vs the reverse. A lopsided result means one model is genuinely
+    better. Agreements are ignored (they say nothing about which is better).
+  * Wilcoxon signed-rank -- for FROZEN vs FULL (H6). Compares the per-mouse
+    differences without assuming a bell curve: it ranks the differences by size
+    and checks whether they lean mostly positive or negative. The
+    assumption-light cousin of the paired t-test.
+
+9.5 Multiple-comparison correction (Holm-Bonferroni)
+
+  We test ~6 hypotheses. If you run many tests, something will look
+  "significant" by pure chance (test 20 things at p<0.05 and ~1 fires randomly).
+  Holm-Bonferroni tightens the significance bar according to how many tests were
+  run, so a surviving result is trustworthy. Both RAW and CORRECTED p-values are
+  reported.
+
+9.6 Why a SINGLE seed here (and where the variance comes from)
+
+  The previous project used one seed (42) for reproducibility; this project keeps
+  that. The statistical variance behind every claim comes from the SUBJECT
+  population -- the per-subject paired tests resample MICE, so "is the difference
+  real?" is answered WITHOUT repeating seeds. Running many seeds would
+  additionally characterise model-INITIALISATION variance (did one lucky init
+  win?) -- a separate, secondary question, handled only if challenged, via a
+  small seed sweep on the headline pair. Single seed 42 keeps the study fully
+  reproducible and matched to the baseline.
+
+9.7 Worked example -- the headline claim (R3 vs R4, false alarms)
+
+  1. Compute false-alarm rate per mouse for R3 and R4 (single seed 42).
+  2. Per mouse, take R3 - R4.
+  3. Bootstrap those differences -> mean reduction + 95% CI.
+  4. Check the CI excludes zero; report the p-value.
+  5. Apply Holm-Bonferroni across all hypotheses.
+  6. State it: "SSL reduced false alarms by X/hour (95% CI [a, b], p = ...,
+     Holm-corrected)."
+  That sentence is the defensible claim.
+
+--------------------------------------------------------------------------------
+10. IMPLEMENTATION / BUILD PLAN (EVALUATION SCRIPTS)
+--------------------------------------------------------------------------------
+
+Order in which the EVALUATION code is written. Method-stage scripts
+(scaffolding, data layer, SSL pretraining, downstream adaptation) are recorded
+in STUDY_REPORT.txt Section 13, which also states the shared build decisions
+(baseline modules VENDORED to src/vendor/, Slurm .sh wrappers, seed 42, and the
+"verify the R1 vertical slice end-to-end BEFORE scaling" strategy). Evaluation
+scripts reuse the vendored eval_utils.py and the baseline postproc_sweep.py.
+
+Phase 4 -- Evaluation
+  10. scripts/cache_predictions.py -- inference -> y_prob NPZ with chronology
+      (mouse_id, chrono_idx, t_start_sec), one per variant (run x protocol).
+      Reuses the baseline prediction-caching format so the sweep can run offline.
+  11. scripts/postproc_sweep.py (adapted) -- min-event sweep {10,15,20,25,30} s +
+      Recall-vs-FAR/hr Pareto + operating-point selection, per run x protocol;
+      emits the baseline output tree and figures (Section 6, 6.1). Reuses the
+      baseline postproc_sweep.py. Resolves [TBD-7].
+  12. scripts/artefact_proxy.py -- build stratum A (seizure-mimicking non-ictal)
+      and control B via multi-feature morphology; compute the stratified
+      false-alarm number (Layer 2, Section 2.2). Resolves [TBD-5].
+  13. scripts/embedding_analysis.py -- extract frozen-encoder embeddings; UMAP /
+      t-SNE; seizure-vs-artefact probe AUROC; silhouette / Fisher ratio
+      (Layer 3, Section 2.3). Resolves [TBD-6].
+
+Phase 5 -- Statistics and reporting
+  14. src/analysis/stats.py -- per-subject paired tests (DeLong, bootstrap,
+      McNemar, Wilcoxon), Holm-Bonferroni correction, multi-seed aggregation
+      (Section 5).
+  15. scripts/make_tables_figures.py -- Tables 1-4 and Figures 2-4, including the
+      cross-study benchmark table (Table 4) and the min-event impact figure
+      (Figure 2).
+
+Each evaluation stage has a Slurm .sh wrapper matching the baseline convention.
+These layers are added AFTER the R1 vertical slice is verified end-to-end
+(STUDY_REPORT.txt Section 13).
 
 ================================================================================
  END OF DOCUMENT (living; updated as reporting is finalised)

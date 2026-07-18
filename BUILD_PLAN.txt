@@ -1,0 +1,114 @@
+================================================================================
+ BUILD PLAN  --  QUICK REFERENCE (layout + script write-order)
+ SSL Data-Distribution Seizure-Detection Study
+================================================================================
+
+Quick-access companion. Full detail: METHOD scripts in STUDY_REPORT.txt
+Section 13; EVALUATION scripts in RESULTS_REPORTING_PLAN.txt Section 10.
+
+--------------------------------------------------------------------------------
+ GLOBAL BUILD DECISIONS
+--------------------------------------------------------------------------------
+  * VENDOR the baseline encoder (tcn_utils.MultiScaleTCN) + eval_utils.py as a
+    PINNED COPY into src/vendor/ (record source commit hash). Not imported live
+    -> repo self-contained, encoder cannot drift from R0.
+  * Every stage has a SLURM .sh wrapper, matching the DL_WITH_SSL_GA convention.
+  * Deterministic seeding (seed 42).
+  * VERTICAL SLICE FIRST: get R1 end-to-end (SSL pretrain -> fine-tune -> cache
+    predictions -> one metric) and verify BEFORE scaling to R2-R4 and adding
+    evaluation Layers 2/3.
+  * Runs DEVELOPED here: R1, R2, R3, R4. R0 is reused from the parent project.
+
+--------------------------------------------------------------------------------
+ DIRECTORY LAYOUT
+--------------------------------------------------------------------------------
+  src/
+    common/      config.py, seed.py
+    vendor/      pinned tcn_utils.py (MultiScaleTCN) + eval_utils.py
+    data/        datasets.py
+    models/      masked_autoencoder.py
+    analysis/    stats.py
+  scripts/       runnable drivers + Slurm .sh wrappers (one per stage)
+  configs/       R1..R4 configs + global paths / constants
+
+--------------------------------------------------------------------------------
+ CLUSTER PATHS & OUTPUT LAYOUT
+--------------------------------------------------------------------------------
+  INPUT (derived): /home/people/22206468/scratch/INPUT_SSL_DATA_DISTRIBUTION/
+     -> D_broad manifest, artefact-proxy strata, derived inputs (written+read)
+     Reused parent manifests (D0, D_full, val/test): parent data_splits_outputs/
+
+  OUTPUT: /home/people/22206468/scratch/OUTPUT_SSL_DATA_DISTRIBUTION/
+     R1/  SSL_PRETRAINING  FROZEN_FINE_TUNING  FULL_FINE_TUNING
+     R2/  SSL_PRETRAINING  FROZEN_FINE_TUNING  FULL_FINE_TUNING
+     R3/  SSL_PRETRAINING  FROZEN_FINE_TUNING  FULL_FINE_TUNING
+     R4/                                       FULL_FINE_TUNING   (random; full-only)
+     ANALYSIS/  cross-run: embeddings, tables, figures, benchmark
+
+  SHARED PRETRAINING: R2 & R3 both pretrain on D_full (identical) -> train ONCE,
+     reuse for both; each keeps its own logs. R1 pretrains on D0. => 2 SSL
+     pretrainings total (D0 for R1; D_full for R2+R3).
+  SEED: single seed 42 (one seed level; variance comes from subjects, not seeds).
+  LOGGING: every script writes a log (baseline convention).
+
+--------------------------------------------------------------------------------
+ SCRIPT WRITE-ORDER  (dependency order)
+--------------------------------------------------------------------------------
+
+ PHASE 0 -- Scaffolding
+   1. src/common/config.py, seed.py      paths, constants, seeding
+   2. src/vendor/                        pinned MultiScaleTCN + eval_utils
+   3. scripts/audit_manifests.py         verify manifests + D_full enumeration;
+                                         record counts            [TBD-8]
+
+ PHASE 1 -- Data layer
+   4. src/data/datasets.py               SSLWindowDataset (masked) + reuse of
+                                         vendored EEGSegmentDataset
+   5. scripts/build_broad_manifest.py    build D_broad from data_splits.json
+                                         (adapts create_balanced_splits) [TBD-4]
+
+ PHASE 2 -- SSL pretraining (new core)
+   6. src/models/masked_autoencoder.py   M3 encoder + span-mask + decoder +
+                                         reconstruction loss    [TBD-1, TBD-2]
+   7. scripts/pretrain_ssl.py (+ .sh)    SSL loop; val reconstruction monitor;
+                                         checkpoint-resume; R1<-D0, R2/R3<-D_full
+                                                                        [TBD-3]
+
+ PHASE 3 -- Downstream adaptation
+   8. scripts/finetune.py (+ .sh)        load pretrained encoder; head;
+                                         P1 frozen / P2 full; baseline recipe
+   9. configs/R1..R4.yaml                per-run wiring (init, SSL data,
+                                         fine-tune data, protocol)
+
+ PHASE 4 -- Evaluation
+  10. scripts/cache_predictions.py       inference -> y_prob NPZ + chronology,
+                                         per run x protocol
+  11. scripts/postproc_sweep.py (adapt)  min-event sweep {10..30}s + Pareto +
+                                         operating-point select; baseline output
+                                         tree (reuse postproc_sweep)     [TBD-7]
+  12. scripts/artefact_proxy.py          stratum A/B (multi-feature morphology);
+                                         stratified FA (Layer 2)         [TBD-5]
+  13. scripts/embedding_analysis.py      embeddings; UMAP/t-SNE; probe AUROC;
+                                         silhouette (Layer 3)            [TBD-6]
+
+ PHASE 5 -- Statistics & reporting
+  14. src/analysis/stats.py              paired tests (DeLong/bootstrap/McNemar/
+                                         Wilcoxon), Holm-Bonferroni, multi-seed
+  15. scripts/make_tables_figures.py     Tables 1-4, Figures 2-4 (incl. Table 4
+                                         benchmark, Figure 2 impact)
+
+ PHASE 6 -- Orchestration
+  16. scripts/*.sh + run_all             Slurm wrappers per stage; pipeline
+                                         README
+
+--------------------------------------------------------------------------------
+ OPEN PARAMETERS TO RESOLVE WHILE CODING  (detail: STUDY_REPORT.txt Section 12)
+--------------------------------------------------------------------------------
+  [TBD-1] mask ratio / span length        [TBD-5] artefact-proxy features
+  [TBD-2] decoder + reconstruction loss   [TBD-6] embedding sample sizes
+  [TBD-3] SSL optimiser / schedule / epochs  [TBD-7] min-event operating point
+  [TBD-4] D_broad construction            [TBD-8] per-partition counts / D_full
+
+================================================================================
+ END (living; keep in sync with STUDY_REPORT.txt S13 + RESULTS_REPORTING_PLAN S10)
+================================================================================
