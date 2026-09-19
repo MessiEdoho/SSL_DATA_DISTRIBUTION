@@ -29,6 +29,11 @@ STEP_SEC: float = STEP / FS
 
 SEED: int = 42           # single seed throughout (see STUDY_REPORT S13)
 
+# M3 selected hyperparameters (num_filters, kernel_size, dropout, fusion) --
+# loaded from the baseline tuning output so the SSL encoder is IDENTICAL to R0.
+# Override the path via SSL_DD_M3_PARAMS if it lives elsewhere on the cluster.
+M3_PARAMS_PATH = os.environ.get("SSL_DD_M3_PARAMS", "")  # resolved in load_m3_hparams()
+
 # --------------------------------------------------------------------------- #
 # Base paths (overridable via environment).
 # --------------------------------------------------------------------------- #
@@ -119,6 +124,41 @@ def ssl_shared_dir(ssl_data: str) -> Path:
     and stored here; each run's own SSL_PRETRAINING/ folder keeps its logs and a
     provenance pointer to this directory (STUDY_REPORT S13)."""
     return OUTPUT_DIR / "SSL_SHARED" / ssl_data
+
+
+def load_m3_hparams(path: Optional[Path] = None) -> dict:
+    """Load M3's selected architecture hyperparameters (num_filters, kernel_size,
+    dropout, fusion) so the SSL encoder matches R0 exactly.
+
+    Resolution order: explicit `path` -> SSL_DD_M3_PARAMS -> a few known cluster
+    locations.  Raises FileNotFoundError with guidance if none is found.
+    """
+    import json
+
+    candidates = []
+    if path:
+        candidates.append(Path(path))
+    if M3_PARAMS_PATH:
+        candidates.append(Path(M3_PARAMS_PATH))
+    # Known baseline tuning-output locations (best-effort).
+    candidates += [
+        SCRATCH / "OUTPUT" / "MODEL3_OUTPUT" / "MultiScaleTCNtuning_outputs" / "best_multiscale_params.json",
+        SCRATCH / "OUTPUT" / "MODEL3_OUTPUT" / "MultiScaleTCN" / "best_multiscale_params.json",
+    ]
+    for c in candidates:
+        if c and Path(c).exists():
+            with open(c, "r", encoding="utf-8") as f:
+                hp = json.load(f)
+            return {
+                "num_filters": int(hp["num_filters"]),
+                "kernel_size": int(hp["kernel_size"]),
+                "dropout": float(hp["dropout"]),
+                "fusion": hp.get("fusion", "concat"),
+            }
+    raise FileNotFoundError(
+        "best_multiscale_params.json not found. Pass --m3-params <path> or set "
+        "SSL_DD_M3_PARAMS to the baseline tuning output. Tried: "
+        + ", ".join(str(c) for c in candidates if c))
 
 
 def ensure_dirs(*paths: Path) -> None:

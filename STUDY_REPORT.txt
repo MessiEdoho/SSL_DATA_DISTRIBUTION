@@ -90,11 +90,15 @@ are binary (ictal / non-ictal); artefacts are unlabeled non-ictal segments.
          prevalence. Used ONLY for self-supervised pretraining (labels are not
          consumed by SSL; gradients from train subjects only).
 
-  D_broad Broadened-background fine-tuning corpus. D0 with the far-from-seizure
-         sampling fraction substantially enlarged (and/or an artefact-rich
-         stratified supplement), so that the classification head and threshold
-         are exposed to diverse background during supervised fine-tuning.
-         Labeled. Construction parameters: [TBD-4, fixed on validation].
+  D_broad Broadened-background fine-tuning corpus. Construction (set-difference;
+         build_broad_manifest.py): D_broad = D0 (all ictal + all D0 non-ictal)
+         PLUS extra FAR-from-seizure background drawn from (full-corpus non-ictal
+         MINUS D0), within the SAME 71 training mice (m254 excluded, as D0). The
+         broadening level is a target non-ictal:ictal ratio R (D0 is 1:2.37);
+         R=6 (CONFIRMED 2026-07-25) -> ~393k non-ictal. Labeled; val/test copied
+         unchanged from the filtered+enriched manifest. The supervised recipe
+         (incl. pos_weight=1.0) is held constant, so R is a disclosed design
+         choice, NOT tuned on validation.
 
 The held-out validation and test partitions are the FULL, un-downsampled
 stream and are never downsampled, so evaluation reflects deployment conditions.
@@ -146,14 +150,22 @@ Notes.
     they are NEVER proximity-downsampled.
   * Validation used to MONITOR SSL reconstruction loss = VAL_DATA (val
     partition), no gradients (Section 5.4).
-  * Exact per-partition subject/segment counts live in each manifest's metadata
-    on the cluster; record them here once read [TBD-8]. Known figures: D0 =
-    220,653 train segments; D_full train ~28.7M (~0.23% ictal).
-  * Code-time check for D_full (SSL): confirm whether data_splits.json's train
-    list ENUMERATES every non-ictal segment (so the SSL loader can read it
-    directly) or whether the full non_seizure/ corpus must be enumerated by
-    scanning the folders. Verify the physical segment count on disk vs the
-    manifest before building the SSL data loader (record under [TBD-8]).
+  * Per-partition counts (RESOLVED [TBD-8]; audit_manifests.py, 2026-07-25):
+      TRAIN (full corpus) 28,752,220 segs; 65,510 ictal / 28,686,710 non-ictal;
+                          72 mice; 0.228% ictal.
+      D0 (downsampled)    220,653 segs; 65,510 ictal / 155,143 non-ictal;
+                          71 mice (m254 excluded); 29.69% ictal.
+      VAL (filtered)      4,294,953 segs; 11,603 ictal; 10 mice; 0.270% ictal.
+      TEST (filtered)     9,753,796 segs; 15,238 ictal; 20 mice; 0.156% ictal.
+      Subject-level leakage check PASSED on every manifest.
+  * D_full ENUMERATION (RESOLVED): data_splits.json and
+    data_splits_full_train_enriched.json ENUMERATE every segment (all
+    28,686,710 non-ictal listed individually) -> the SSL loader reads the
+    manifest DIRECTLY; no folder scan. The enriched variant also carries
+    chronology (chrono_idx, t_start_sec).
+  * m254: the full-corpus train has 72 mice, INCLUDING m254 (0 seizures), which
+    D0 excluded. For label-free SSL pretraining m254 is RETAINED (more
+    unlabelled data, no downside); D0 and all supervised fine-tuning keep 71.
 
 --------------------------------------------------------------------------------
 4. ENCODER ARCHITECTURE (REUSED FROM BASELINE, UNCHANGED)
@@ -216,19 +228,33 @@ and rejected as the primary method for three task-specific reasons:
 Masked autoencoding is thus both more suitable and more defensible for the
 false-alarm objective, while remaining a mainstream, well-cited SSL paradigm.
 
-5.3 Pretraining configuration
+5.3 Pretraining configuration (APPROVED [TBD-1,2,3]; 2026-07-25)
 
-  * Masking: contiguous span masking; masking ratio [TBD; candidate sweep
-    25% / 50% / 75%, fixed on validation].
-  * Reconstruction target: time-domain signal (primary). A spectral (STFT
-    magnitude) reconstruction term is an optional extension, recorded here if
-    adopted.
-  * Loss: reconstruction error on masked positions (e.g. MSE), [exact form TBD].
-  * Optimiser / schedule / batch size / epochs: [TBD]; checkpoint-resume
-    mirrors the baseline's pattern for long HPC jobs.
-  * Which runs pretrain on which data: R1 on D0; R2 and R3 on D_full.
-  * Held constant across R1-R3: masking scheme, decoder, loss, optimiser,
-    schedule. Only the ENCODER INITIALISATION and the DATA vary between runs.
+  * Architecture: M3 encoder tapped at the PRE-POOL feature map (batch,
+    num_filters, 2500) -- branches + fusion reused from the vendored
+    MultiScaleTCN (classification still uses the pooled vector). M3
+    hyperparameters (num_filters, kernel_size, dropout, fusion) are LOADED from
+    best_multiscale_params.json so the encoder is identical to R0. Decoder:
+    2x Conv1d (kernel 3, GELU), num_filters -> num_filters -> 1; discarded after
+    pretraining.
+  * Masking [TBD-1]: contiguous SPAN masking; ratio 50%; span length 50 samples
+    (0.1 s; ~25 spans / 2500-sample window); masked spans set to 0 (robust-z
+    baseline) in the encoder input.
+  * Reconstruction target [TBD-2]: TIME-DOMAIN signal (primary). Loss: MSE on
+    MASKED positions only (MAE convention). Spectral/STFT target deferred to the
+    A1 ablation.
+  * Optimiser / schedule [TBD-3]: AdamW, lr 1e-3, weight_decay 0.05; cosine
+    decay with 5,000-step warmup; batch 256.
+  * BUDGET: FIXED 100,000 STEPS (not epochs), held IDENTICAL across R1 (D0) and
+    R2/R3 (D_full) -- so R1->R2 isolates DATA distribution, not compute
+    (~25.6M windows seen at batch 256; ~0.9 pass of D_full, ~116 passes of D0).
+    No D_full subsampling; shuffled streaming.
+  * Monitoring: validation RECONSTRUCTION loss (best = lowest). Checkpoint /
+    resume per the Section 13 infrastructure conventions.
+  * Which runs pretrain on which data: R1 on D0; R2 and R3 on D_full (shared
+    encoder, trained once).
+  * Held constant across R1-R3: masking, decoder, loss, optimiser, schedule,
+    step budget. Only ENCODER INITIALISATION and DATA vary between runs.
 
 5.4 Data provenance and no-leakage policy (pretraining)
 
@@ -464,7 +490,8 @@ cross-references remain valid.
            spectral (STFT) reconstruction term is added (fixed, disclosed).
   [TBD-3]  SSL optimiser, LR schedule, batch size, epochs, pretraining data
            subsampling for the ~33M-segment D_full job (fixed, disclosed).
-  [TBD-4]  D_broad construction (far-sampling fraction / artefact supplement).
+  [TBD-4]  RESOLVED (2026-07-25): D_broad ratio R=6 (~393k non-ictal). Disclosed
+           design choice, NOT tuned on validation; pos_weight stays 1.0.
   [TBD-5]  Artefact-proxy feature set, standardisation, composite score, and
            selection percentiles; seizure-distance margin (60 s vs 120 s).
   [TBD-6]  Embedding-analysis sample sizes per group.
@@ -473,8 +500,8 @@ cross-references remain valid.
            in DL_WITH_SSL_GA via postproc_sweep.py. An optional deterministic
            rule (min normalised distance to the bottom-right corner) may be used
            for full reproducibility. NO FAR/hr ceiling. Recorded once chosen.
-  [TBD-8]  Exact per-partition subject and segment counts (train / val / test),
-           read from the manifest metadata on the cluster (Section 3.1).
+  [TBD-8]  RESOLVED (audit 2026-07-25): counts + D_full enumeration recorded in
+           Section 3.1. SSL loader reads the D_full manifest directly (no scan).
 
 --------------------------------------------------------------------------------
 13. IMPLEMENTATION / BUILD PLAN (METHOD SCRIPTS)
